@@ -17,7 +17,7 @@ const PORT = process.env.PORT || 3000;
 const KURDISH_TTS_URL =
   "https://www.kurdishtts.com/api/tts-proxy";
 
-const SPEAKER_ID = "sorani_1070";
+const SPEAKER_ID = "986";
 const MODEL_VERSION = "v4";
 
 // ================================================
