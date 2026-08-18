@@ -18,7 +18,7 @@ const KURDISH_TTS_URL =
   "https://www.kurdishtts.com/api/tts-proxy";
 
 const SPEAKER_ID = "986";
-const MODEL_VERSION = "v4";
+const MODEL_VERSION = "v3";
 
 // ================================================
 // KURDISH STT SETTINGS
