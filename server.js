@@ -358,12 +358,6 @@ function sendTranscriptToVapi(
       return;
     }
 
-    // KurdishTTS normally sends:
-    // {
-    //   text: "...",
-    //   is_final: true/false
-    // }
-
     const transcription =
       data.text ||
       data.transcript ||
@@ -579,10 +573,7 @@ wss.on(
             "Connected to KurdishTTS STT"
           );
 
-          // We do NOT send a fake VAPI-ready
-          // control message to KurdishTTS.
-          //
-          // We wait for VAPI's real "start" message
+          // Wait for VAPI's real start message
           // so we know the actual audio format.
         }
       );
@@ -672,9 +663,6 @@ wss.on(
               );
               return;
             }
-
-            // KurdishTTS requires:
-            // PCM16 / mono / 16000 Hz
 
             if (
               vapiSampleRate !==
@@ -766,8 +754,6 @@ wss.on(
               })
             );
 
-            // Validate format
-
             const validEncoding =
               !vapiEncoding ||
               vapiEncoding === "linear16" ||
@@ -788,12 +774,8 @@ wss.on(
               );
             }
 
-            // IMPORTANT:
-            // Do NOT forward VAPI's "start" message
-            // to KurdishTTS.
-            //
-            // KurdishTTS expects raw PCM audio
-            // and its own finalize control message.
+            // Do not forward VAPI's start message.
+            // KurdishTTS receives only raw PCM audio.
 
             return;
           }
@@ -811,10 +793,6 @@ wss.on(
             return;
           }
 
-          // Some systems may send stop/end messages.
-          // Finalize KurdishTTS so it flushes the final
-          // transcript.
-
           if (
             message.type === "stop" ||
             message.type === "end"
@@ -823,9 +801,6 @@ wss.on(
             finalizeKurdishStt();
             return;
           }
-
-          // Do not blindly forward other VAPI messages
-          // to KurdishTTS.
         }
       );
 
@@ -843,11 +818,8 @@ wss.on(
             "Vapi STT client disconnected"
           );
 
-          // Ask KurdishTTS to flush the final
-          // transcript before closing.
           finalizeKurdishStt();
 
-          // Give finalize a short time to complete.
           setTimeout(
             () => {
 
