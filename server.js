@@ -17,8 +17,8 @@ const PORT = process.env.PORT || 3000;
 const KURDISH_TTS_URL =
   "https://www.kurdishtts.com/api/tts-proxy";
 
-const SPEAKER_ID = "986";
-const MODEL_VERSION = "v3";
+const SPEAKER_ID = "sorani_1070";
+const MODEL_VERSION = "v4";
 
 // ================================================
 // KURDISH STT SETTINGS
@@ -372,7 +372,8 @@ wss.on("connection", async (clientWs) => {
         return;
       }
 
-      // Control messages
+      // Control messages such as:
+      // { "type": "control", "event": "finalize" }
       try {
         const message = data.toString();
 
@@ -469,14 +470,14 @@ server.listen(PORT, () => {
   );
 
   console.log(
-    "HTTP health check: /"
+    `HTTP health check: /`
   );
 
   console.log(
-    "TTS endpoint: /api/synthesize"
+    `TTS endpoint: /api/synthesize`
   );
 
   console.log(
-    "STT WebSocket: /api/stt"
+    `STT WebSocket: /api/stt`
   );
 });
