@@ -14,41 +14,57 @@ const PORT = process.env.PORT || 3000;
 // KURDISH TTS
 // =====================================================
 
-const KURDISH_TTS_URL = process.env.KURDISH_TTS_URL;
-const SPEAKER_ID = "sorani_986";
-const MODEL_VERSION = "v4";
+// Uses Railway variable if you set one.
+// Otherwise uses the KurdishTTS endpoint directly.
+const KURDISH_TTS_URL =
+  process.env.KURDISH_TTS_URL ||
+  "https://www.kurdishtts.com/api/tts-proxy";
+
+const SPEAKER_ID =
+  process.env.KURDISHTTS_SPEAKER_ID ||
+  "sorani_986";
+
+const MODEL_VERSION =
+  process.env.KURDISHTTS_MODEL_VERSION ||
+  "v4";
 
 // =====================================================
 // KURDISH STT
 // =====================================================
 
 const KURDISH_STT_CONNECT_URL =
-  process.env.KURDISH_STT_CONNECT_URL;
+  process.env.KURDISH_STT_CONNECT_URL ||
+  "https://www.kurdishtts.com/api/stt-stream-connect";
 
 const STT_DIALECT = "sorani";
 
 const REQUIRED_STT_SAMPLE_RATE = 16000;
 const REQUIRED_STT_CHANNELS = 1;
 
-// Maximum audio waiting while KurdishTTS STT connects.
-// 10 MB is much more than needed for the short startup delay.
-const MAX_PENDING_AUDIO_BYTES = 10 * 1024 * 1024;
+const MAX_PENDING_AUDIO_BYTES =
+  10 * 1024 * 1024;
 
 // =====================================================
-// HEALTH
+// HEALTH CHECK
 // =====================================================
 
 app.get("/", (req, res) => {
-  res.json({
+  res.status(200).json({
     status: "ok",
-    service: "Kurdish Sorani Vapi Bridge",
+    service: "Kurdish Sorani Vapi TTS + STT Bridge",
 
     tts: {
+      enabled: true,
+      urlConfigured: !!KURDISH_TTS_URL,
+      keyConfigured: !!process.env.KURDISHTTS_TTS_KEY,
       speaker: SPEAKER_ID,
       model: MODEL_VERSION
     },
 
     stt: {
+      enabled: true,
+      urlConfigured: !!KURDISH_STT_CONNECT_URL,
+      keyConfigured: !!process.env.KURDISHTTS_STT_KEY,
       dialect: STT_DIALECT,
       requiredFormat: "PCM16",
       requiredSampleRate: REQUIRED_STT_SAMPLE_RATE,
@@ -69,30 +85,37 @@ app.get("/health", (req, res) => {
 
 app.post("/api/synthesize", async (req, res) => {
   try {
-    const message = req.body?.message;
+    // Supports Vapi's normal nested message format.
+    const message = req.body?.message || req.body;
 
-    if (!message) {
-      return res.status(400).json({
-        error: "Missing message object"
-      });
-    }
+    const messageType =
+      message?.type ||
+      req.body?.message?.type;
 
-    if (message.type !== "voice-request") {
-      return res.status(400).json({
-        error: "Invalid message type",
-        receivedType: message.type
-      });
+    if (
+      messageType &&
+      messageType !== "voice-request"
+    ) {
+      console.log(
+        "[TTS] Received type:",
+        messageType
+      );
     }
 
     const text =
-      typeof message.text === "string"
+      typeof message?.text === "string"
         ? message.text.trim()
         : "";
 
     const requestedSampleRate =
-      Number(message.sampleRate) || 16000;
+      Number(message?.sampleRate) ||
+      16000;
 
     if (!text) {
+      console.error(
+        "[TTS] ERROR: Missing text"
+      );
+
       return res.status(400).json({
         error: "Missing text"
       });
@@ -122,30 +145,40 @@ app.post("/api/synthesize", async (req, res) => {
       process.env.KURDISHTTS_TTS_KEY;
 
     if (!apiKey) {
+      console.error(
+        "[TTS] ERROR: KURDISHTTS_TTS_KEY missing"
+      );
+
       return res.status(500).json({
         error:
           "KURDISHTTS_TTS_KEY is not configured"
       });
     }
 
-    if (!KURDISH_TTS_URL) {
-      return res.status(500).json({
-        error:
-          "KURDISH_TTS_URL is not configured"
-      });
-    }
-
+    console.log("========================================");
+    console.log("[TTS] REQUEST RECEIVED");
     console.log(
-      `[TTS] Generating Sorani speech | speaker=${SPEAKER_ID} | model=${MODEL_VERSION} | rate=${requestedSampleRate}`
+      `[TTS] Rate: ${requestedSampleRate}Hz`
     );
+    console.log(
+      `[TTS] Speaker: ${SPEAKER_ID}`
+    );
+    console.log(
+      `[TTS] Model: ${MODEL_VERSION}`
+    );
+    console.log(
+      `[TTS] Text: ${text}`
+    );
+    console.log("========================================");
 
-    console.log(`[TTS] Text: ${text}`);
+    const controller =
+      new AbortController();
 
-    const controller = new AbortController();
-
-    const timeout = setTimeout(() => {
-      controller.abort();
-    }, 30000);
+    const timeout =
+      setTimeout(
+        () => controller.abort(),
+        30000
+      );
 
     let ttsResponse;
 
@@ -157,7 +190,8 @@ app.post("/api/synthesize", async (req, res) => {
 
           headers: {
             "x-api-key": apiKey,
-            "Content-Type": "application/json"
+            "Content-Type":
+              "application/json"
           },
 
           body: JSON.stringify({
@@ -173,38 +207,49 @@ app.post("/api/synthesize", async (req, res) => {
       clearTimeout(timeout);
     }
 
+    console.log(
+      `[TTS] KurdishTTS HTTP status: ${ttsResponse.status}`
+    );
+
     if (!ttsResponse.ok) {
       const errorText =
         await ttsResponse.text();
 
       console.error(
-        "[TTS] KurdishTTS error:",
+        "[TTS] UPSTREAM ERROR:",
         errorText
       );
 
       return res.status(502).json({
-        error: "KurdishTTS request failed",
-        details: errorText
+        error:
+          "KurdishTTS request failed",
+        upstreamStatus:
+          ttsResponse.status,
+        details:
+          errorText.slice(0, 2000)
       });
     }
 
-    const wavBuffer = Buffer.from(
+    const audioBuffer = Buffer.from(
       await ttsResponse.arrayBuffer()
     );
 
-    if (!wavBuffer.length) {
+    if (!audioBuffer.length) {
       throw new Error(
         "KurdishTTS returned empty audio"
       );
     }
 
     console.log(
-      `[TTS] Received WAV: ${wavBuffer.length} bytes`
+      `[TTS] Received audio: ${audioBuffer.length} bytes`
     );
 
+    // KurdishTTS returns WAV/audio.
+    // Convert it to exactly the PCM16 mono
+    // format requested by Vapi.
     const pcmBuffer =
-      await wavToPcm16Mono(
-        wavBuffer,
+      await audioToPcm16Mono(
+        audioBuffer,
         requestedSampleRate
       );
 
@@ -215,7 +260,7 @@ app.post("/api/synthesize", async (req, res) => {
     }
 
     console.log(
-      `[TTS] Sending PCM: ${pcmBuffer.length} bytes`
+      `[TTS] PCM ready: ${pcmBuffer.length} bytes`
     );
 
     res.setHeader(
@@ -233,36 +278,46 @@ app.post("/api/synthesize", async (req, res) => {
       "no-store"
     );
 
-    return res.status(200).send(
-      pcmBuffer
-    );
+    return res
+      .status(200)
+      .send(pcmBuffer);
 
   } catch (error) {
 
     console.error(
-      "[TTS] Bridge error:",
+      "[TTS] BRIDGE ERROR:",
       error
     );
 
     if (!res.headersSent) {
       return res.status(500).json({
         error: "TTS bridge failed",
-        details: error.message
+        details:
+          error.message ||
+          String(error)
       });
     }
   }
 });
 
 // =====================================================
-// WAV -> PCM16 MONO
+// AUDIO -> PCM16 MONO
 // =====================================================
 
-function wavToPcm16Mono(
-  wavBuffer,
+function audioToPcm16Mono(
+  audioBuffer,
   sampleRate
 ) {
   return new Promise(
     (resolve, reject) => {
+
+      if (!ffmpegPath) {
+        return reject(
+          new Error(
+            "ffmpeg-static did not provide an FFmpeg binary"
+          )
+        );
+      }
 
       const ffmpeg = spawn(
         ffmpegPath,
@@ -321,7 +376,7 @@ function wavToPcm16Mono(
                 Buffer
                   .concat(errors)
                   .toString() ||
-                  `FFmpeg exited with code ${code}`
+                `FFmpeg exited with code ${code}`
               )
             );
           }
@@ -332,7 +387,9 @@ function wavToPcm16Mono(
         }
       );
 
-      ffmpeg.stdin.end(wavBuffer);
+      ffmpeg.stdin.end(
+        audioBuffer
+      );
     }
   );
 }
@@ -341,29 +398,23 @@ function wavToPcm16Mono(
 // HTTP SERVER
 // =====================================================
 
-const server = http.createServer(app);
+const server =
+  http.createServer(app);
 
 // =====================================================
 // VAPI CUSTOM TRANSCRIBER WEBSOCKET
 // =====================================================
 
-const wss = new WebSocketServer({
-  noServer: true,
+const wss =
+  new WebSocketServer({
+    noServer: true,
 
-  maxPayload: 20 * 1024 * 1024
-});
+    maxPayload:
+      20 * 1024 * 1024
+  });
 
 // =====================================================
-// EXTRACT CUSTOMER CHANNEL
-//
-// Vapi sends stereo audio:
-//
-// channel 0 = customer
-// channel 1 = assistant
-//
-// KurdishTTS requires mono.
-//
-// We only send channel 0 to KurdishTTS.
+// EXTRACT CUSTOMER AUDIO CHANNEL
 // =====================================================
 
 function extractCustomerChannelPcm16(
@@ -375,11 +426,13 @@ function extractCustomerChannelPcm16(
       ? audioData
       : Buffer.from(audioData);
 
+  // Already mono
   if (channels === 1) {
     return input;
   }
 
   const bytesPerSample = 2;
+
   const bytesPerFrame =
     channels * bytesPerSample;
 
@@ -395,11 +448,14 @@ function extractCustomerChannelPcm16(
   }
 
   const frameCount =
-    validLength / bytesPerFrame;
+    validLength /
+    bytesPerFrame;
 
-  const output = Buffer.alloc(
-    frameCount * bytesPerSample
-  );
+  const output =
+    Buffer.alloc(
+      frameCount *
+      bytesPerSample
+    );
 
   let outputOffset = 0;
 
@@ -408,21 +464,22 @@ function extractCustomerChannelPcm16(
     inputOffset < validLength;
     inputOffset += bytesPerFrame
   ) {
-    // channel 0 = customer
+    // Channel 0 = customer
     output[outputOffset] =
       input[inputOffset];
 
     output[outputOffset + 1] =
       input[inputOffset + 1];
 
-    outputOffset += bytesPerSample;
+    outputOffset +=
+      bytesPerSample;
   }
 
   return output;
 }
 
 // =====================================================
-// SEND TRANSCRIPT TO VAPI
+// KURDISHTTS RESPONSE -> VAPI TRANSCRIPT
 // =====================================================
 
 function sendTranscriptToVapi(
@@ -441,24 +498,12 @@ function sendTranscriptToVapi(
     let data;
 
     try {
-      data = JSON.parse(rawText);
+      data =
+        JSON.parse(rawText);
     } catch {
       console.log(
-        "[STT] Ignoring non-JSON response"
+        "[STT] Non-JSON response ignored"
       );
-
-      return;
-    }
-
-    // KurdishTTS final completion control event
-    if (
-      data.type === "control" &&
-      data.event === "done"
-    ) {
-      console.log(
-        "[STT] KurdishTTS session completed"
-      );
-
       return;
     }
 
@@ -467,7 +512,16 @@ function sendTranscriptToVapi(
         "[STT] KurdishTTS error:",
         data.error
       );
+      return;
+    }
 
+    if (
+      data.type === "control" &&
+      data.event === "done"
+    ) {
+      console.log(
+        "[STT] KurdishTTS finalized"
+      );
       return;
     }
 
@@ -481,7 +535,8 @@ function sendTranscriptToVapi(
       "";
 
     if (
-      typeof transcription !== "string" ||
+      typeof transcription !==
+        "string" ||
       !transcription.trim()
     ) {
       return;
@@ -492,7 +547,8 @@ function sendTranscriptToVapi(
       data.isFinal === true ||
       data.final === true ||
       data.type === "final" ||
-      data.type === "final_transcript" ||
+      data.type ===
+        "final_transcript" ||
       data.event === "final" ||
       data.result?.is_final === true ||
       data.result?.isFinal === true ||
@@ -521,14 +577,15 @@ function sendTranscriptToVapi(
       WebSocket.OPEN
     ) {
       clientWs.send(
-        JSON.stringify(vapiMessage)
+        JSON.stringify(
+          vapiMessage
+        )
       );
     }
 
   } catch (error) {
-
     console.error(
-      "[STT] Error sending transcript to Vapi:",
+      "[STT] Transcript forwarding error:",
       error.message
     );
   }
@@ -543,6 +600,10 @@ wss.on(
   async (clientWs) => {
 
     console.log(
+      "========================================"
+    );
+
+    console.log(
       "[STT] Vapi client connected"
     );
 
@@ -550,38 +611,11 @@ wss.on(
       process.env.KURDISHTTS_STT_KEY;
 
     if (!apiKey) {
-
       console.error(
-        "[STT] KURDISHTTS_STT_KEY is missing"
-      );
-
-      if (
-        clientWs.readyState ===
-        WebSocket.OPEN
-      ) {
-        clientWs.send(
-          JSON.stringify({
-            type: "error",
-
-            error:
-              "KURDISHTTS_STT_KEY is not configured"
-          })
-        );
-      }
-
-      clientWs.close();
-
-      return;
-    }
-
-    if (!KURDISH_STT_CONNECT_URL) {
-
-      console.error(
-        "[STT] KURDISH_STT_CONNECT_URL is missing"
+        "[STT] ERROR: KURDISHTTS_STT_KEY missing"
       );
 
       clientWs.close();
-
       return;
     }
 
@@ -599,17 +633,16 @@ wss.on(
 
     let vapiEncoding = null;
 
-    // IMPORTANT:
-    //
-    // Audio can arrive before KurdishTTS
-    // finishes connecting.
-    //
-    // OLD CODE DROPPED THAT AUDIO.
-    //
-    // THIS VERSION BUFFERS IT.
+    // Raw audio waits here until BOTH:
+    // 1. Vapi has sent start/audio config
+    // 2. KurdishTTS WebSocket is ready
     let pendingAudio = [];
 
     let pendingAudioBytes = 0;
+
+    // -------------------------------------------------
+    // QUEUE AUDIO
+    // -------------------------------------------------
 
     function queueAudio(buffer) {
 
@@ -623,11 +656,10 @@ wss.on(
         MAX_PENDING_AUDIO_BYTES
       ) {
         console.error(
-          "[STT] Pending audio buffer full. Closing connection to avoid losing sync."
+          "[STT] Audio buffer exceeded maximum"
         );
 
         clientWs.close();
-
         return;
       }
 
@@ -637,12 +669,118 @@ wss.on(
         buffer.length;
     }
 
+    // -------------------------------------------------
+    // SEND AUDIO TO KURDISHTTS
+    // -------------------------------------------------
+
+    function sendAudioToUpstream(
+      buffer
+    ) {
+
+      if (!buffer.length) {
+        return;
+      }
+
+      if (
+        !upstreamReady ||
+        !sttWs ||
+        sttWs.readyState !==
+          WebSocket.OPEN
+      ) {
+        queueAudio(buffer);
+        return;
+      }
+
+      sttWs.send(
+        buffer,
+        {
+          binary: true
+        }
+      );
+    }
+
+    // -------------------------------------------------
+    // PROCESS ONE RAW VAPI AUDIO CHUNK
+    //
+    // IMPORTANT:
+    // We only process audio AFTER the start message.
+    // This prevents sending unknown stereo/raw audio
+    // directly to KurdishTTS.
+    // -------------------------------------------------
+
+    function processVapiAudio(
+      rawAudio
+    ) {
+
+      if (!vapiStarted) {
+        queueAudio(rawAudio);
+        return;
+      }
+
+      if (
+        vapiEncoding &&
+        vapiEncoding !==
+          "linear16" &&
+        vapiEncoding !==
+          "pcm_s16le"
+      ) {
+        console.error(
+          `[STT] Unsupported encoding: ${vapiEncoding}`
+        );
+
+        return;
+      }
+
+      if (
+        vapiSampleRate !==
+        REQUIRED_STT_SAMPLE_RATE
+      ) {
+        console.error(
+          `[STT] Wrong sample rate: ${vapiSampleRate}. Expected ${REQUIRED_STT_SAMPLE_RATE}.`
+        );
+
+        return;
+      }
+
+      const customerAudio =
+        extractCustomerChannelPcm16(
+          rawAudio,
+          vapiChannels
+        );
+
+      if (!customerAudio.length) {
+        return;
+      }
+
+      sendAudioToUpstream(
+        customerAudio
+      );
+    }
+
+    // -------------------------------------------------
+    // FLUSH PENDING AUDIO
+    //
+    // This is the critical fix.
+    // Never flush until we know Vapi's audio config.
+    // -------------------------------------------------
+
     function flushPendingAudio() {
+
+      if (!vapiStarted) {
+        console.log(
+          "[STT] Waiting for Vapi start before flushing audio"
+        );
+        return;
+      }
+
+      if (!upstreamReady) {
+        return;
+      }
 
       if (
         !sttWs ||
         sttWs.readyState !==
-        WebSocket.OPEN
+          WebSocket.OPEN
       ) {
         return;
       }
@@ -651,76 +789,36 @@ wss.on(
         return;
       }
 
+      const oldQueue =
+        pendingAudio;
+
+      const oldBytes =
+        pendingAudioBytes;
+
+      pendingAudio = [];
+      pendingAudioBytes = 0;
+
       console.log(
-        `[STT] Flushing ${pendingAudio.length} queued audio chunks (${pendingAudioBytes} bytes)`
+        `[STT] Processing ${oldQueue.length} buffered chunks (${oldBytes} bytes)`
       );
 
       for (
-        const audioChunk of pendingAudio
+        const rawChunk of oldQueue
       ) {
-        try {
-          sttWs.send(
-            audioChunk,
-            {
-              binary: true
-            }
-          );
-        } catch (error) {
-          console.error(
-            "[STT] Error flushing audio:",
-            error.message
-          );
-
-          break;
-        }
-      }
-
-      pendingAudio = [];
-
-      pendingAudioBytes = 0;
-    }
-
-    function sendAudioToUpstream(
-      audioBuffer
-    ) {
-
-      if (!audioBuffer.length) {
-        return;
-      }
-
-      if (
-        !upstreamReady ||
-        !sttWs ||
-        sttWs.readyState !==
-        WebSocket.OPEN
-      ) {
-        queueAudio(audioBuffer);
-
-        return;
-      }
-
-      try {
-        sttWs.send(
-          audioBuffer,
-          {
-            binary: true
-          }
+        processVapiAudio(
+          rawChunk
         );
-      } catch (error) {
-
-        console.error(
-          "[STT] Audio send failed. Re-queueing:",
-          error.message
-        );
-
-        queueAudio(audioBuffer);
       }
     }
 
     try {
 
+      // =================================================
+      // CREATE KURDISHTTS STT SESSION
+      // =================================================
+
       console.log(
-        "[STT] Requesting KurdishTTS streaming session..."
+        "[STT] Creating KurdishTTS session..."
       );
 
       const controller =
@@ -735,7 +833,6 @@ wss.on(
       let connectResponse;
 
       try {
-
         connectResponse =
           await fetch(
             KURDISH_STT_CONNECT_URL,
@@ -744,27 +841,31 @@ wss.on(
 
               headers: {
                 "x-api-key": apiKey,
-
                 "Content-Type":
                   "application/json"
               },
 
-              body: JSON.stringify({
-                dialect: STT_DIALECT
-              }),
+              body:
+                JSON.stringify({
+                  dialect:
+                    STT_DIALECT
+                }),
 
               signal:
                 controller.signal
             }
           );
-
       } finally {
-
-        clearTimeout(timeout);
+        clearTimeout(
+          timeout
+        );
       }
 
-      if (!connectResponse.ok) {
+      console.log(
+        `[STT] Session HTTP status: ${connectResponse.status}`
+      );
 
+      if (!connectResponse.ok) {
         const errorText =
           await connectResponse.text();
 
@@ -783,7 +884,7 @@ wss.on(
 
       if (!websocketUrl) {
         throw new Error(
-          "KurdishTTS did not return websocket_url"
+          "KurdishTTS did not return a WebSocket URL"
         );
       }
 
@@ -792,18 +893,19 @@ wss.on(
       );
 
       // =================================================
-      // CONNECT TO KURDISHTTS
+      // CONNECT UPSTREAM
       // =================================================
 
       sttWs =
-        new WebSocket(websocketUrl);
+        new WebSocket(
+          websocketUrl
+        );
 
       sttWs.on(
         "open",
         () => {
 
           if (clientClosed) {
-
             try {
               sttWs.close();
             } catch {}
@@ -817,8 +919,8 @@ wss.on(
             "[STT] Connected to KurdishTTS WebSocket"
           );
 
-          // If Vapi already started sending audio,
-          // send the buffered beginning now.
+          // This will only flush if Vapi start
+          // has already arrived.
           flushPendingAudio();
         }
       );
@@ -830,7 +932,6 @@ wss.on(
       sttWs.on(
         "message",
         (data) => {
-
           sendTranscriptToVapi(
             clientWs,
             data
@@ -841,7 +942,6 @@ wss.on(
       sttWs.on(
         "error",
         (error) => {
-
           console.error(
             "[STT] KurdishTTS WebSocket error:",
             error.message
@@ -851,7 +951,10 @@ wss.on(
 
       sttWs.on(
         "close",
-        (code, reason) => {
+        (
+          code,
+          reason
+        ) => {
 
           upstreamReady = false;
 
@@ -862,14 +965,11 @@ wss.on(
           if (
             !clientClosed &&
             clientWs.readyState ===
-            WebSocket.OPEN
+              WebSocket.OPEN
           ) {
-
             console.error(
-              "[STT] Upstream closed while Vapi call is still active"
+              "[STT] Upstream closed during active call"
             );
-
-            clientWs.close();
           }
         }
       );
@@ -880,91 +980,56 @@ wss.on(
 
       clientWs.on(
         "message",
-        (data, isBinary) => {
+        (
+          data,
+          isBinary
+        ) => {
 
-          // =============================================
-          // BINARY PCM AUDIO
-          // =============================================
+          // ---------------------------------------------
+          // AUDIO
+          // ---------------------------------------------
 
           if (isBinary) {
 
+            const rawAudio =
+              Buffer.from(data);
+
+            // Don't process yet if we don't know
+            // sample rate/channels.
             if (!vapiStarted) {
 
               console.log(
-                "[STT] Audio received before start message. Temporarily buffering."
+                "[STT] Audio received before start. Buffering safely."
               );
 
               queueAudio(
-                Buffer.from(data)
+                rawAudio
               );
 
               return;
             }
 
-            const input =
-              Buffer.from(data);
-
-            // Vapi should send linear16 PCM.
-            // Do not corrupt audio by trying to interpret
-            // another format as PCM.
-            if (
-              vapiEncoding &&
-              vapiEncoding !== "linear16" &&
-              vapiEncoding !== "pcm_s16le"
-            ) {
-
-              console.error(
-                `[STT] Unsupported Vapi encoding: ${vapiEncoding}`
-              );
-
-              return;
-            }
-
-            if (
-              vapiSampleRate !==
-              REQUIRED_STT_SAMPLE_RATE
-            ) {
-
-              console.error(
-                `[STT] Wrong Vapi sample rate: ${vapiSampleRate}. Expected ${REQUIRED_STT_SAMPLE_RATE}.`
-              );
-
-              return;
-            }
-
-            const customerAudio =
-              extractCustomerChannelPcm16(
-                input,
-                vapiChannels
-              );
-
-            if (!customerAudio.length) {
-              return;
-            }
-
-            sendAudioToUpstream(
-              customerAudio
+            processVapiAudio(
+              rawAudio
             );
 
             return;
           }
 
-          // =============================================
-          // JSON CONTROL
-          // =============================================
+          // ---------------------------------------------
+          // JSON CONTROL MESSAGE
+          // ---------------------------------------------
 
           let message;
 
           try {
-
-            message = JSON.parse(
-              data.toString()
-            );
-
+            message =
+              JSON.parse(
+                data.toString()
+              );
           } catch {
-
             console.log(
-              "[STT] Ignoring non-JSON control message"
+              "[STT] Ignoring invalid JSON control"
             );
 
             return;
@@ -972,15 +1037,18 @@ wss.on(
 
           console.log(
             "[STT] Vapi control:",
-            JSON.stringify(message)
+            JSON.stringify(
+              message
+            )
           );
 
-          // =============================================
+          // ---------------------------------------------
           // START
-          // =============================================
+          // ---------------------------------------------
 
           if (
-            message.type === "start"
+            message.type ===
+            "start"
           ) {
 
             vapiStarted = true;
@@ -1000,19 +1068,19 @@ wss.on(
               ) || 1;
 
             console.log(
-              "[STT] Vapi audio config:",
+              "[STT] Vapi audio configuration:",
               JSON.stringify({
                 encoding:
                   vapiEncoding,
-
-                container:
-                  message.container,
 
                 sampleRate:
                   vapiSampleRate,
 
                 channels:
-                  vapiChannels
+                  vapiChannels,
+
+                container:
+                  message.container
               })
             );
 
@@ -1020,84 +1088,37 @@ wss.on(
               vapiSampleRate !==
               REQUIRED_STT_SAMPLE_RATE
             ) {
-
               console.error(
-                `[STT] CONFIGURATION ERROR: Vapi is sending ${vapiSampleRate}Hz. This bridge requires ${REQUIRED_STT_SAMPLE_RATE}Hz.`
+                `[STT] CONFIG ERROR: Vapi is ${vapiSampleRate}Hz but KurdishTTS requires ${REQUIRED_STT_SAMPLE_RATE}Hz`
               );
             }
 
-            // Audio may have arrived before the start
-            // message. It cannot safely be channel-extracted
-            // until we know the channel count.
-            //
-            // If upstream is already ready, flush it only
-            // after converting/extracting based on start info.
-
-            if (
-              pendingAudio.length &&
-              upstreamReady
-            ) {
-
-              const oldQueue =
-                pendingAudio;
-
-              pendingAudio = [];
-              pendingAudioBytes = 0;
-
-              for (
-                const chunk of oldQueue
-              ) {
-
-                if (
-                  vapiSampleRate !==
-                  REQUIRED_STT_SAMPLE_RATE
-                ) {
-                  continue;
-                }
-
-                const customerAudio =
-                  extractCustomerChannelPcm16(
-                    chunk,
-                    vapiChannels
-                  );
-
-                if (
-                  customerAudio.length
-                ) {
-                  sendAudioToUpstream(
-                    customerAudio
-                  );
-                }
-              }
-            }
+            // NOW we know the audio format.
+            // Safely process anything buffered before start.
+            flushPendingAudio();
 
             return;
           }
 
-          // =============================================
-          // OPTIONAL FINALIZE
-          // =============================================
-          //
-          // We do NOT finalize automatically after silence.
-          // That would permanently end the KurdishTTS
-          // streaming session in the middle of a call.
-          //
-          // Only finalize when Vapi explicitly ends it.
-          // =============================================
+          // ---------------------------------------------
+          // FINALIZE
+          // ---------------------------------------------
 
           if (
-            message.type === "control" &&
-            message.event === "finalize"
+            message.type ===
+              "control" &&
+            message.event ===
+              "finalize"
           ) {
 
             if (
               sttWs &&
               sttWs.readyState ===
-              WebSocket.OPEN
+                WebSocket.OPEN
             ) {
 
               console.log(
-                "[STT] Sending explicit finalize to KurdishTTS"
+                "[STT] Sending finalize"
               );
 
               sttWs.send(
@@ -1111,26 +1132,30 @@ wss.on(
             return;
           }
 
+          // ---------------------------------------------
+          // STOP / END
+          // ---------------------------------------------
+
           if (
-            message.type === "stop" ||
-            message.type === "end"
+            message.type ===
+              "stop" ||
+            message.type ===
+              "end"
           ) {
 
             if (
               sttWs &&
               sttWs.readyState ===
-              WebSocket.OPEN
+                WebSocket.OPEN
             ) {
-
               try {
-
                 sttWs.send(
                   JSON.stringify({
                     type: "control",
-                    event: "finalize"
+                    event:
+                      "finalize"
                   })
                 );
-
               } catch {}
             }
           }
@@ -1138,7 +1163,7 @@ wss.on(
       );
 
       // =================================================
-      // CLIENT CLOSE
+      // CLIENT CLOSED
       // =================================================
 
       clientWs.on(
@@ -1154,28 +1179,21 @@ wss.on(
           if (
             sttWs &&
             sttWs.readyState ===
-            WebSocket.OPEN
+              WebSocket.OPEN
           ) {
-
             try {
-
-              console.log(
-                "[STT] Finalizing KurdishTTS session"
-              );
-
               sttWs.send(
                 JSON.stringify({
                   type: "control",
-                  event: "finalize"
+                  event:
+                    "finalize"
                 })
               );
-
             } catch {}
           }
 
           setTimeout(
             () => {
-
               if (
                 sttWs &&
                 (
@@ -1185,12 +1203,10 @@ wss.on(
                     WebSocket.CONNECTING
                 )
               ) {
-
                 try {
                   sttWs.close();
                 } catch {}
               }
-
             },
             1000
           );
@@ -1200,7 +1216,6 @@ wss.on(
       clientWs.on(
         "error",
         (error) => {
-
           console.error(
             "[STT] Vapi client error:",
             error.message
@@ -1211,7 +1226,7 @@ wss.on(
     } catch (error) {
 
       console.error(
-        "[STT] Bridge startup error:",
+        "[STT] STARTUP ERROR:",
         error
       );
 
@@ -1219,19 +1234,6 @@ wss.on(
         clientWs.readyState ===
         WebSocket.OPEN
       ) {
-
-        clientWs.send(
-          JSON.stringify({
-            type: "error",
-
-            error:
-              "STT bridge failed",
-
-            details:
-              error.message
-          })
-        );
-
         clientWs.close();
       }
     }
@@ -1250,42 +1252,88 @@ server.on(
     head
   ) => {
 
-    const url = new URL(
-      request.url,
-      `http://${request.headers.host}`
-    );
+    try {
 
-    if (
-      url.pathname === "/api/stt"
-    ) {
+      const url =
+        new URL(
+          request.url,
+          `http://${request.headers.host}`
+        );
 
-      console.log(
-        "[STT] Incoming WebSocket connection"
+      if (
+        url.pathname ===
+        "/api/stt"
+      ) {
+
+        console.log(
+          "[STT] Incoming Vapi WebSocket"
+        );
+
+        wss.handleUpgrade(
+          request,
+          socket,
+          head,
+          (ws) => {
+
+            wss.emit(
+              "connection",
+              ws,
+              request
+            );
+          }
+        );
+
+        return;
+      }
+
+      socket.destroy();
+
+    } catch (error) {
+
+      console.error(
+        "[STT] Upgrade error:",
+        error.message
       );
 
-      wss.handleUpgrade(
-        request,
-        socket,
-        head,
-        (ws) => {
-
-          wss.emit(
-            "connection",
-            ws,
-            request
-          );
-        }
-      );
-
-      return;
+      socket.destroy();
     }
-
-    socket.destroy();
   }
 );
 
 // =====================================================
-// START
+// GLOBAL EXPRESS ERROR HANDLER
+// =====================================================
+
+app.use(
+  (
+    error,
+    req,
+    res,
+    next
+  ) => {
+
+    console.error(
+      "[HTTP] Unhandled error:",
+      error
+    );
+
+    if (
+      res.headersSent
+    ) {
+      return next(error);
+    }
+
+    res.status(500).json({
+      error:
+        "Internal bridge error",
+      details:
+        error.message
+    });
+  }
+);
+
+// =====================================================
+// START SERVER
 // =====================================================
 
 server.listen(
@@ -1302,15 +1350,19 @@ server.listen(
     );
 
     console.log(
-      "HTTP health check: /"
+      `TTS endpoint: /api/synthesize`
     );
 
     console.log(
-      "TTS endpoint: /api/synthesize"
+      `STT WebSocket: /api/stt`
     );
 
     console.log(
-      "STT WebSocket: /api/stt"
+      `TTS URL: ${KURDISH_TTS_URL}`
+    );
+
+    console.log(
+      `STT URL: ${KURDISH_STT_CONNECT_URL}`
     );
 
     console.log(
@@ -1327,6 +1379,14 @@ server.listen(
 
     console.log(
       `STT required audio: PCM16 mono ${REQUIRED_STT_SAMPLE_RATE}Hz`
+    );
+
+    console.log(
+      `TTS key configured: ${!!process.env.KURDISHTTS_TTS_KEY}`
+    );
+
+    console.log(
+      `STT key configured: ${!!process.env.KURDISHTTS_STT_KEY}`
     );
 
     console.log(
