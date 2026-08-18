@@ -372,8 +372,7 @@ wss.on("connection", async (clientWs) => {
         return;
       }
 
-      // Control messages such as:
-      // { "type": "control", "event": "finalize" }
+      // Control messages
       try {
         const message = data.toString();
 
@@ -470,14 +469,14 @@ server.listen(PORT, () => {
   );
 
   console.log(
-    `HTTP health check: /`
+    "HTTP health check: /"
   );
 
   console.log(
-    `TTS endpoint: /api/synthesize`
+    "TTS endpoint: /api/synthesize"
   );
 
   console.log(
-    `STT WebSocket: /api/stt`
+    "STT WebSocket: /api/stt"
   );
 });
