@@ -8,10 +8,10 @@ const app = express();
 
 app.use(express.json({ limit: "10mb" }));
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
 
 // =====================================================
-// KURDISH TTS
+// KURDISH TTS SETTINGS
 // =====================================================
 
 const KURDISH_TTS_URL =
@@ -27,31 +27,23 @@ const MODEL_VERSION =
   "v4";
 
 // =====================================================
-// OPENAI REALTIME STT
+// KURDISH REAL-TIME STT SETTINGS
 // =====================================================
 
-const OPENAI_API_KEY =
-  process.env.OPENAI_API_KEY;
+const KURDISH_STT_CONNECT_URL =
+  process.env.KURDISH_STT_CONNECT_URL ||
+  "https://www.kurdishtts.com/api/stt-stream-connect";
 
-const OPENAI_REALTIME_URL =
-  process.env.OPENAI_REALTIME_URL ||
-  "wss://api.openai.com/v1/realtime?intent=transcription";
+const STT_DIALECT =
+  process.env.STT_DIALECT ||
+  "sorani";
 
-const OPENAI_TRANSCRIPTION_MODEL =
-  process.env.OPENAI_TRANSCRIPTION_MODEL ||
-  "gpt-4o-transcribe";
+const REQUIRED_STT_SAMPLE_RATE = 16000;
+const REQUIRED_STT_CHANNELS = 1;
 
-// Kurdish ISO-639-1 language code.
-const STT_LANGUAGE =
-  process.env.STT_LANGUAGE ||
-  "ku";
-
-// Vapi normally sends 16kHz PCM.
-// OpenAI Realtime PCM16 requires 24kHz mono.
-const OPENAI_SAMPLE_RATE = 24000;
-
+// Prevent unlimited buffering if STT is still connecting
 const MAX_PENDING_AUDIO_BYTES =
-  15 * 1024 * 1024;
+  10 * 1024 * 1024;
 
 // =====================================================
 // HEALTH CHECK
@@ -65,20 +57,19 @@ app.get("/", (req, res) => {
     tts: {
       enabled: true,
       provider: "KurdishTTS",
-      urlConfigured: !!KURDISH_TTS_URL,
-      keyConfigured: !!process.env.KURDISHTTS_TTS_KEY,
       speaker: SPEAKER_ID,
-      model: MODEL_VERSION
+      model: MODEL_VERSION,
+      keyConfigured: !!process.env.KURDISHTTS_TTS_KEY
     },
 
     stt: {
       enabled: true,
-      provider: "OpenAI Realtime",
-      keyConfigured: !!OPENAI_API_KEY,
-      model: OPENAI_TRANSCRIPTION_MODEL,
-      language: STT_LANGUAGE,
-      inputFormat: "PCM16",
-      openaiSampleRate: OPENAI_SAMPLE_RATE
+      provider: "KurdishTTS Realtime Streaming",
+      dialect: STT_DIALECT,
+      keyConfigured: !!process.env.KURDISHTTS_STT_KEY,
+      requiredFormat: "PCM16",
+      requiredSampleRate: REQUIRED_STT_SAMPLE_RATE,
+      requiredChannels: REQUIRED_STT_CHANNELS
     }
   });
 });
@@ -91,7 +82,7 @@ app.get("/health", (req, res) => {
 
 // =====================================================
 // TTS
-// KURDISHTTS -> RAW PCM16 MONO FOR VAPI
+// VAPI -> BRIDGE -> KURDISHTTS
 // =====================================================
 
 app.post("/api/synthesize", async (req, res) => {
@@ -101,15 +92,14 @@ app.post("/api/synthesize", async (req, res) => {
       req.body;
 
     const messageType =
-      message?.type ||
-      req.body?.message?.type;
+      message?.type;
 
     if (
       messageType &&
       messageType !== "voice-request"
     ) {
       console.log(
-        "[TTS] Received type:",
+        "[TTS] Received message type:",
         messageType
       );
     }
@@ -120,32 +110,17 @@ app.post("/api/synthesize", async (req, res) => {
         : "";
 
     const requestedSampleRate =
-      Number(message?.sampleRate) ||
-      16000;
+      Number(message?.sampleRate) || 16000;
 
     if (!text) {
-      console.error(
-        "[TTS] ERROR: Missing text"
-      );
-
       return res.status(400).json({
         error: "Missing text"
       });
     }
 
-    const allowedSampleRates = [
-      8000,
-      16000,
-      22050,
-      24000,
-      44100,
-      48000
-    ];
-
     if (
-      !allowedSampleRates.includes(
-        requestedSampleRate
-      )
+      ![8000, 16000, 22050, 24000, 44100, 48000]
+        .includes(requestedSampleRate)
     ) {
       return res.status(400).json({
         error: "Unsupported sample rate",
@@ -157,10 +132,6 @@ app.post("/api/synthesize", async (req, res) => {
       process.env.KURDISHTTS_TTS_KEY;
 
     if (!apiKey) {
-      console.error(
-        "[TTS] ERROR: KURDISHTTS_TTS_KEY missing"
-      );
-
       return res.status(500).json({
         error:
           "KURDISHTTS_TTS_KEY is not configured"
@@ -168,73 +139,25 @@ app.post("/api/synthesize", async (req, res) => {
     }
 
     console.log(
-      "========================================"
+      `[TTS] Generating speech at ${requestedSampleRate}Hz`
     );
 
-    console.log(
-      "[TTS] REQUEST RECEIVED"
-    );
+    const ttsResponse = await fetch(
+      KURDISH_TTS_URL,
+      {
+        method: "POST",
 
-    console.log(
-      `[TTS] Rate: ${requestedSampleRate}Hz`
-    );
+        headers: {
+          "x-api-key": apiKey,
+          "Content-Type": "application/json"
+        },
 
-    console.log(
-      `[TTS] Speaker: ${SPEAKER_ID}`
-    );
-
-    console.log(
-      `[TTS] Model: ${MODEL_VERSION}`
-    );
-
-    console.log(
-      `[TTS] Text: ${text}`
-    );
-
-    console.log(
-      "========================================"
-    );
-
-    const controller =
-      new AbortController();
-
-    const timeout =
-      setTimeout(
-        () => controller.abort(),
-        30000
-      );
-
-    let ttsResponse;
-
-    try {
-      ttsResponse =
-        await fetch(
-          KURDISH_TTS_URL,
-          {
-            method: "POST",
-
-            headers: {
-              "x-api-key": apiKey,
-
-              "Content-Type":
-                "application/json"
-            },
-
-            body: JSON.stringify({
-              text,
-              speaker_id: SPEAKER_ID,
-              model_version: MODEL_VERSION
-            }),
-
-            signal: controller.signal
-          }
-        );
-    } finally {
-      clearTimeout(timeout);
-    }
-
-    console.log(
-      `[TTS] KurdishTTS HTTP status: ${ttsResponse.status}`
+        body: JSON.stringify({
+          text,
+          speaker_id: SPEAKER_ID,
+          model_version: MODEL_VERSION
+        })
+      }
     );
 
     if (!ttsResponse.ok) {
@@ -242,51 +165,23 @@ app.post("/api/synthesize", async (req, res) => {
         await ttsResponse.text();
 
       console.error(
-        "[TTS] UPSTREAM ERROR:",
+        "[TTS] KurdishTTS error:",
         errorText
       );
 
       return res.status(502).json({
-        error:
-          "KurdishTTS request failed",
-
-        upstreamStatus:
-          ttsResponse.status,
-
-        details:
-          errorText.slice(0, 2000)
+        error: "KurdishTTS request failed",
+        details: errorText
       });
     }
 
-    const audioBuffer =
-      Buffer.from(
-        await ttsResponse.arrayBuffer()
-      );
-
-    if (!audioBuffer.length) {
-      throw new Error(
-        "KurdishTTS returned empty audio"
-      );
-    }
-
-    console.log(
-      `[TTS] Received audio: ${audioBuffer.length} bytes`
+    const audioBuffer = Buffer.from(
+      await ttsResponse.arrayBuffer()
     );
 
-    const pcmBuffer =
-      await audioToPcm16Mono(
-        audioBuffer,
-        requestedSampleRate
-      );
-
-    if (!pcmBuffer.length) {
-      throw new Error(
-        "PCM conversion returned empty audio"
-      );
-    }
-
-    console.log(
-      `[TTS] PCM ready: ${pcmBuffer.length} bytes`
+    const pcmBuffer = await convertToPcm16(
+      audioBuffer,
+      requestedSampleRate
     );
 
     res.setHeader(
@@ -299,195 +194,149 @@ app.post("/api/synthesize", async (req, res) => {
       pcmBuffer.length
     );
 
-    res.setHeader(
-      "Cache-Control",
-      "no-store"
-    );
-
-    return res
-      .status(200)
-      .send(pcmBuffer);
+    res.status(200).send(pcmBuffer);
 
   } catch (error) {
-
     console.error(
-      "[TTS] BRIDGE ERROR:",
+      "[TTS] Bridge error:",
       error
     );
 
     if (!res.headersSent) {
-      return res.status(500).json({
+      res.status(500).json({
         error: "TTS bridge failed",
-
-        details:
-          error.message ||
-          String(error)
+        details: error.message
       });
     }
   }
 });
 
 // =====================================================
-// KURDISHTTS AUDIO -> PCM16 MONO
+// CONVERT TTS AUDIO TO RAW PCM16 MONO
 // =====================================================
 
-function audioToPcm16Mono(
-  audioBuffer,
+function convertToPcm16(
+  inputBuffer,
   sampleRate
 ) {
-  return new Promise(
-    (resolve, reject) => {
+  return new Promise((resolve, reject) => {
 
-      if (!ffmpegPath) {
-        return reject(
-          new Error(
-            "ffmpeg-static did not provide an FFmpeg binary"
-          )
-        );
-      }
-
-      const ffmpeg =
-        spawn(
-          ffmpegPath,
-          [
-            "-hide_banner",
-            "-loglevel",
-            "error",
-
-            "-i",
-            "pipe:0",
-
-            "-ac",
-            "1",
-
-            "-ar",
-            String(sampleRate),
-
-            "-f",
-            "s16le",
-
-            "pipe:1"
-          ]
-        );
-
-      const chunks = [];
-      const errors = [];
-
-      ffmpeg.stdout.on(
-        "data",
-        (chunk) => {
-          chunks.push(chunk);
-        }
-      );
-
-      ffmpeg.stderr.on(
-        "data",
-        (chunk) => {
-          errors.push(chunk);
-        }
-      );
-
-      ffmpeg.on(
+    const ffmpeg = spawn(
+      ffmpegPath,
+      [
+        "-hide_banner",
+        "-loglevel",
         "error",
-        (error) => {
-          reject(error);
-        }
-      );
+        "-i",
+        "pipe:0",
+        "-ac",
+        "1",
+        "-ar",
+        String(sampleRate),
+        "-f",
+        "s16le",
+        "pipe:1"
+      ]
+    );
 
-      ffmpeg.on(
-        "close",
-        (code) => {
+    const outputChunks = [];
+    const errorChunks = [];
 
-          if (code !== 0) {
-            return reject(
-              new Error(
-                Buffer
-                  .concat(errors)
-                  .toString() ||
-                `FFmpeg exited with code ${code}`
-              )
-            );
-          }
+    ffmpeg.stdout.on(
+      "data",
+      (chunk) => {
+        outputChunks.push(chunk);
+      }
+    );
 
-          resolve(
-            Buffer.concat(chunks)
+    ffmpeg.stderr.on(
+      "data",
+      (chunk) => {
+        errorChunks.push(chunk);
+      }
+    );
+
+    ffmpeg.on(
+      "error",
+      reject
+    );
+
+    ffmpeg.on(
+      "close",
+      (code) => {
+
+        if (code !== 0) {
+          return reject(
+            new Error(
+              Buffer.concat(errorChunks)
+                .toString() ||
+              `FFmpeg exited with code ${code}`
+            )
           );
         }
-      );
 
-      ffmpeg.stdin.end(
-        audioBuffer
-      );
-    }
-  );
+        resolve(
+          Buffer.concat(outputChunks)
+        );
+      }
+    );
+
+    ffmpeg.stdin.end(inputBuffer);
+  });
 }
 
 // =====================================================
-// HTTP SERVER
+// CREATE HTTP SERVER
 // =====================================================
 
-const server =
-  http.createServer(app);
+const server = http.createServer(app);
 
 // =====================================================
-// VAPI CUSTOM TRANSCRIBER WEBSOCKET
+// VAPI CUSTOM TRANSCRIBER WEBSOCKET SERVER
 // =====================================================
 
-const wss =
-  new WebSocketServer({
-    noServer: true,
-
-    maxPayload:
-      20 * 1024 * 1024
-  });
+const wss = new WebSocketServer({
+  noServer: true
+});
 
 // =====================================================
 // EXTRACT CUSTOMER CHANNEL
 //
-// Vapi normally sends:
-// channel 0 = customer
-// channel 1 = assistant
+// If Vapi sends:
+// Channel 0 = customer
+// Channel 1 = assistant
+//
+// KurdishTTS needs mono customer audio.
 // =====================================================
 
 function extractCustomerChannelPcm16(
   audioData,
   channels
 ) {
-  const input =
-    Buffer.isBuffer(audioData)
-      ? audioData
-      : Buffer.from(audioData);
+  const input = Buffer.from(audioData);
 
   if (channels === 1) {
     return input;
   }
 
   const bytesPerSample = 2;
-
   const bytesPerFrame =
-    channels *
-    bytesPerSample;
+    channels * bytesPerSample;
 
   const validLength =
     input.length -
-    (
-      input.length %
-      bytesPerFrame
-    );
+    (input.length % bytesPerFrame);
 
   if (validLength <= 0) {
     return Buffer.alloc(0);
   }
 
   const frameCount =
-    validLength /
-    bytesPerFrame;
+    validLength / bytesPerFrame;
 
-  const output =
-    Buffer.alloc(
-      frameCount *
-      bytesPerSample
-    );
+  const output = Buffer.alloc(
+    frameCount * bytesPerSample
+  );
 
   let outputOffset = 0;
 
@@ -496,1232 +345,700 @@ function extractCustomerChannelPcm16(
     inputOffset < validLength;
     inputOffset += bytesPerFrame
   ) {
+    // Customer = channel 0
     output[outputOffset] =
       input[inputOffset];
 
-    output[
-      outputOffset + 1
-    ] =
-      input[
-        inputOffset + 1
-      ];
+    output[outputOffset + 1] =
+      input[inputOffset + 1];
 
-    outputOffset +=
-      bytesPerSample;
+    outputOffset += bytesPerSample;
   }
 
   return output;
 }
 
 // =====================================================
-// SEND TRANSCRIPT TO VAPI
+// KURDISHTTS RESPONSE -> VAPI RESPONSE
 // =====================================================
 
 function sendTranscriptToVapi(
   clientWs,
-  transcription,
-  transcriptType
+  rawData
 ) {
-  if (
-    typeof transcription !== "string" ||
-    !transcription.trim()
-  ) {
-    return;
-  }
+  try {
+    const rawText =
+      rawData.toString();
 
-  const vapiMessage = {
-    type: "transcriber-response",
+    console.log(
+      "[STT] KurdishTTS response:",
+      rawText
+    );
 
-    transcription:
-      transcription.trim(),
+    let data;
 
-    channel: "customer",
-
-    transcriptType:
-      transcriptType === "partial"
-        ? "partial"
-        : "final"
-  };
-
-  console.log(
-    `[STT] -> Vapi ${vapiMessage.transcriptType}: ${vapiMessage.transcription}`
-  );
-
-  if (
-    clientWs.readyState ===
-    WebSocket.OPEN
-  ) {
     try {
+      data = JSON.parse(rawText);
+    } catch {
+      console.log(
+        "[STT] Non-JSON response ignored"
+      );
+      return;
+    }
+
+    // Done after finalize
+    if (
+      data.type === "control" &&
+      data.event === "done"
+    ) {
+      console.log(
+        "[STT] KurdishTTS finalized"
+      );
+      return;
+    }
+
+    if (data.error) {
+      console.error(
+        "[STT] KurdishTTS error:",
+        data.error
+      );
+      return;
+    }
+
+    const transcription =
+      data.text ||
+      data.transcript ||
+      data.transcription ||
+      data.result?.text ||
+      data.result?.transcript ||
+      data.result?.transcription ||
+      "";
+
+    if (
+      typeof transcription !== "string" ||
+      !transcription.trim()
+    ) {
+      return;
+    }
+
+    const isFinal =
+      data.is_final === true ||
+      data.isFinal === true ||
+      data.final === true ||
+      data.result?.is_final === true ||
+      data.result?.isFinal === true ||
+      data.result?.final === true;
+
+    const vapiMessage = {
+      type: "transcriber-response",
+      transcription:
+        transcription.trim(),
+      channel: "customer",
+      transcriptType:
+        isFinal
+          ? "final"
+          : "partial"
+    };
+
+    console.log(
+      "[STT] -> Vapi:",
+      JSON.stringify(vapiMessage)
+    );
+
+    if (
+      clientWs.readyState ===
+      WebSocket.OPEN
+    ) {
       clientWs.send(
         JSON.stringify(vapiMessage)
       );
-    } catch (error) {
-      console.error(
-        "[STT] Failed to send transcript to Vapi:",
-        error.message
-      );
     }
+
+  } catch (error) {
+    console.error(
+      "[STT] Error processing transcript:",
+      error.message
+    );
   }
 }
 
 // =====================================================
-// MAIN STT CONNECTION
+// STT WEBSOCKET CONNECTION
 // =====================================================
 
 wss.on(
   "connection",
-  (clientWs) => {
+  async (clientWs) => {
 
     console.log(
       "========================================"
     );
 
     console.log(
-      "[STT] Vapi client connected"
+      "[STT] Vapi connected to Kurdish bridge"
     );
 
-    console.log(
-      "[STT] Provider: OpenAI Realtime"
-    );
+    const apiKey =
+      process.env.KURDISHTTS_STT_KEY;
 
-    console.log(
-      `[STT] Model: ${OPENAI_TRANSCRIPTION_MODEL}`
-    );
-
-    console.log(
-      `[STT] Language: ${STT_LANGUAGE}`
-    );
-
-    console.log(
-      "========================================"
-    );
-
-    if (!OPENAI_API_KEY) {
-
+    if (!apiKey) {
       console.error(
-        "[STT] ERROR: OPENAI_API_KEY missing"
+        "[STT] KURDISHTTS_STT_KEY is missing"
       );
 
-      try {
+      if (
+        clientWs.readyState ===
+        WebSocket.OPEN
+      ) {
         clientWs.send(
           JSON.stringify({
             type: "error",
             error:
-              "OPENAI_API_KEY is not configured"
+              "KURDISHTTS_STT_KEY is not configured"
           })
         );
-      } catch {}
+      }
 
       clientWs.close();
-
       return;
     }
 
+    let sttWs = null;
+    let sttReady = false;
     let clientClosed = false;
+    let finalized = false;
 
     let vapiStarted = false;
-
+    let vapiEncoding = null;
     let vapiSampleRate = null;
-
     let vapiChannels = 1;
 
-    let vapiEncoding = null;
-
-    let openaiWs = null;
-
-    let openaiReady = false;
-
-    let pendingAudio = [];
-
+    // Buffer audio while KurdishTTS
+    // WebSocket is still connecting.
+    const pendingAudio = [];
     let pendingAudioBytes = 0;
 
-    let transcoder = null;
-
-    let transcoderStarted = false;
-
-    let finalizing = false;
-
-    let closeTimer = null;
-
-    // Stores accumulated OpenAI delta text.
-    // Vapi partial transcripts replace the previous partial,
-    // so we must send the accumulated transcript.
-    const partialTranscripts =
-      new Map();
-
     // -------------------------------------------------
-    // QUEUE OPENAI-READY AUDIO
+    // SEND AUDIO TO KURDISHTTS
     // -------------------------------------------------
 
-    function queueAudio(
-      buffer
-    ) {
+    function sendAudioToStt(audio) {
 
       if (
-        !buffer ||
-        !buffer.length
+        !sttWs ||
+        !sttReady ||
+        sttWs.readyState !== WebSocket.OPEN
       ) {
-        return;
-      }
 
-      if (
-        pendingAudioBytes +
-        buffer.length >
-        MAX_PENDING_AUDIO_BYTES
-      ) {
-        console.error(
-          "[STT] Audio queue exceeded maximum"
-        );
+        const audioBuffer =
+          Buffer.from(audio);
 
-        try {
-          clientWs.close();
-        } catch {}
+        if (
+          pendingAudioBytes +
+          audioBuffer.length >
+          MAX_PENDING_AUDIO_BYTES
+        ) {
+          console.error(
+            "[STT] Pending audio buffer is full"
+          );
+          return;
+        }
 
-        return;
-      }
-
-      pendingAudio.push(buffer);
-
-      pendingAudioBytes +=
-        buffer.length;
-    }
-
-    // -------------------------------------------------
-    // SEND 24KHZ PCM AUDIO TO OPENAI
-    // -------------------------------------------------
-
-    function sendAudioToOpenAI(
-      pcm24kBuffer
-    ) {
-
-      if (
-        !pcm24kBuffer ||
-        !pcm24kBuffer.length
-      ) {
-        return;
-      }
-
-      if (
-        !openaiReady ||
-        !openaiWs ||
-        openaiWs.readyState !==
-          WebSocket.OPEN
-      ) {
-        queueAudio(
-          pcm24kBuffer
-        );
+        pendingAudio.push(audioBuffer);
+        pendingAudioBytes +=
+          audioBuffer.length;
 
         return;
       }
 
       try {
-
-        openaiWs.send(
-          JSON.stringify({
-            type:
-              "input_audio_buffer.append",
-
-            audio:
-              pcm24kBuffer.toString(
-                "base64"
-              )
-          })
+        sttWs.send(
+          audio,
+          { binary: true }
         );
-
       } catch (error) {
-
         console.error(
-          "[STT] OpenAI audio send error:",
+          "[STT] Audio forwarding error:",
           error.message
-        );
-
-        queueAudio(
-          pcm24kBuffer
         );
       }
     }
 
     // -------------------------------------------------
-    // FLUSH AUDIO WAITING FOR OPENAI
+    // FLUSH AUDIO BUFFER
     // -------------------------------------------------
 
     function flushPendingAudio() {
 
       if (
-        !openaiReady ||
-        !openaiWs ||
-        openaiWs.readyState !==
-          WebSocket.OPEN
+        !sttWs ||
+        !sttReady ||
+        sttWs.readyState !== WebSocket.OPEN
       ) {
         return;
       }
 
-      if (
-        !pendingAudio.length
-      ) {
-        return;
-      }
-
-      const queued =
-        pendingAudio;
-
-      const queuedBytes =
-        pendingAudioBytes;
-
-      pendingAudio = [];
-      pendingAudioBytes = 0;
-
-      console.log(
-        `[STT] Sending ${queued.length} queued audio chunks (${queuedBytes} bytes)`
-      );
-
-      for (
-        const chunk of queued
-      ) {
-        sendAudioToOpenAI(
-          chunk
-        );
-      }
-    }
-
-    // -------------------------------------------------
-    // START STREAMING FFmpeg RESAMPLER
-    //
-    // Vapi -> PCM16 mono at its sample rate
-    // FFmpeg -> PCM16 mono 24kHz
-    //
-    // OpenAI Realtime PCM16 requires 24kHz mono.
-    // -------------------------------------------------
-
-    function startTranscoder() {
-
-      if (transcoderStarted) {
-        return;
-      }
-
-      if (
-        !vapiSampleRate ||
-        !Number.isFinite(
-          vapiSampleRate
-        )
-      ) {
-        console.error(
-          "[STT] Cannot start transcoder: invalid sample rate"
-        );
-
-        return;
-      }
-
-      if (
-        vapiSampleRate ===
-        OPENAI_SAMPLE_RATE
-      ) {
-        console.log(
-          "[STT] Vapi already uses 24kHz - no resampling required"
-        );
-
-        transcoderStarted = true;
-
-        return;
-      }
-
-      if (!ffmpegPath) {
-        console.error(
-          "[STT] ffmpeg-static binary is unavailable"
-        );
-
-        try {
-          clientWs.close();
-        } catch {}
-
+      if (pendingAudio.length === 0) {
         return;
       }
 
       console.log(
-        `[STT] Starting streaming resampler: ${vapiSampleRate}Hz -> ${OPENAI_SAMPLE_RATE}Hz`
+        `[STT] Flushing ${pendingAudio.length} buffered audio chunks`
       );
 
-      transcoder =
-        spawn(
-          ffmpegPath,
-          [
-            "-hide_banner",
+      while (pendingAudio.length > 0) {
 
-            "-loglevel",
-            "error",
+        const audio =
+          pendingAudio.shift();
 
-            "-f",
-            "s16le",
+        pendingAudioBytes -=
+          audio.length;
 
-            "-ar",
-            String(
-              vapiSampleRate
-            ),
-
-            "-ac",
-            "1",
-
-            "-i",
-            "pipe:0",
-
-            "-ac",
-            "1",
-
-            "-ar",
-            String(
-              OPENAI_SAMPLE_RATE
-            ),
-
-            "-f",
-            "s16le",
-
-            "pipe:1"
-          ]
-        );
-
-      transcoderStarted = true;
-
-      transcoder.stdout.on(
-        "data",
-        (chunk) => {
-
-          const pcm24k =
-            Buffer.from(chunk);
-
-          sendAudioToOpenAI(
-            pcm24k
-          );
-        }
-      );
-
-      transcoder.stderr.on(
-        "data",
-        (chunk) => {
-
-          const text =
-            chunk.toString().trim();
-
-          if (text) {
-            console.error(
-              "[STT] FFmpeg:",
-              text
-            );
-          }
-        }
-      );
-
-      transcoder.on(
-        "error",
-        (error) => {
-
-          console.error(
-            "[STT] FFmpeg error:",
-            error.message
-          );
-        }
-      );
-
-      transcoder.on(
-        "close",
-        (code) => {
-
-          console.log(
-            `[STT] FFmpeg closed with code ${code}`
-          );
-
-          transcoder = null;
-        }
-      );
-    }
-
-    // -------------------------------------------------
-    // PROCESS VAPI AUDIO
-    // -------------------------------------------------
-
-    function processVapiAudio(
-      rawAudio
-    ) {
-
-      if (!vapiStarted) {
-        console.log(
-          "[STT] Audio before Vapi start - waiting"
-        );
-
-        return;
-      }
-
-      if (
-        vapiEncoding &&
-        vapiEncoding !== "linear16" &&
-        vapiEncoding !== "pcm_s16le"
-      ) {
-        console.error(
-          `[STT] Unsupported Vapi encoding: ${vapiEncoding}`
-        );
-
-        return;
-      }
-
-      if (
-        !vapiSampleRate ||
-        !Number.isFinite(
-          vapiSampleRate
-        )
-      ) {
-        console.error(
-          "[STT] Invalid Vapi sample rate"
-        );
-
-        return;
-      }
-
-      const customerAudio =
-        extractCustomerChannelPcm16(
-          rawAudio,
-          vapiChannels
-        );
-
-      if (
-        !customerAudio.length
-      ) {
-        return;
-      }
-
-      // If Vapi is already 24kHz,
-      // send directly to OpenAI.
-      if (
-        vapiSampleRate ===
-        OPENAI_SAMPLE_RATE
-      ) {
-        sendAudioToOpenAI(
-          customerAudio
-        );
-
-        return;
-      }
-
-      startTranscoder();
-
-      if (
-        transcoder &&
-        transcoder.stdin &&
-        !transcoder.stdin.destroyed
-      ) {
         try {
-
-          const canContinue =
-            transcoder.stdin.write(
-              customerAudio
-            );
-
-          if (!canContinue) {
-            console.log(
-              "[STT] FFmpeg input backpressure"
-            );
-          }
-
+          sttWs.send(
+            audio,
+            { binary: true }
+          );
         } catch (error) {
-
           console.error(
-            "[STT] Failed to write audio to FFmpeg:",
+            "[STT] Buffered audio send error:",
+            error.message
+          );
+          break;
+        }
+      }
+
+      pendingAudioBytes = 0;
+    }
+
+    // -------------------------------------------------
+    // FINALIZE KURDISHTTS
+    // -------------------------------------------------
+
+    function finalizeKurdishStt() {
+
+      if (finalized) {
+        return;
+      }
+
+      finalized = true;
+
+      console.log(
+        "[STT] Finalizing KurdishTTS stream"
+      );
+
+      if (
+        sttWs &&
+        sttWs.readyState === WebSocket.OPEN
+      ) {
+        try {
+          sttWs.send(
+            JSON.stringify({
+              type: "control",
+              event: "finalize"
+            })
+          );
+        } catch (error) {
+          console.error(
+            "[STT] Finalize error:",
             error.message
           );
         }
       }
     }
-
-    // -------------------------------------------------
-    // OPENAI EVENT HANDLER
-    // -------------------------------------------------
-
-    function handleOpenAIMessage(
-      rawData
-    ) {
-
-      let event;
-
-      try {
-        event =
-          JSON.parse(
-            rawData.toString()
-          );
-      } catch {
-
-        console.log(
-          "[STT] Ignoring invalid OpenAI JSON"
-        );
-
-        return;
-      }
-
-      // Useful to see all important OpenAI errors.
-      if (
-        event.type === "error"
-      ) {
-
-        console.error(
-          "[STT] OpenAI ERROR:",
-          JSON.stringify(
-            event.error ||
-            event
-          )
-        );
-
-        return;
-      }
-
-      // Session is configured and ready.
-      if (
-        event.type ===
-          "transcription_session.updated" ||
-        event.type ===
-          "transcription_session.created"
-      ) {
-
-        openaiReady = true;
-
-        console.log(
-          "[STT] OpenAI transcription session ready"
-        );
-
-        flushPendingAudio();
-
-        return;
-      }
-
-      // Speech started.
-      if (
-        event.type ===
-        "input_audio_buffer.speech_started"
-      ) {
-
-        console.log(
-          "[STT] OpenAI detected speech"
-        );
-
-        return;
-      }
-
-      // Speech stopped.
-      if (
-        event.type ===
-        "input_audio_buffer.speech_stopped"
-      ) {
-
-        console.log(
-          "[STT] OpenAI detected end of speech"
-        );
-
-        return;
-      }
-
-      // OpenAI automatically committed an utterance.
-      if (
-        event.type ===
-        "input_audio_buffer.committed"
-      ) {
-
-        console.log(
-          `[STT] OpenAI committed audio item: ${event.item_id || "unknown"}`
-        );
-
-        return;
-      }
-
-      // Incremental transcript.
-      if (
-        event.type ===
-        "conversation.item.input_audio_transcription.delta"
-      ) {
-
-        const itemId =
-          event.item_id ||
-          "current";
-
-        const delta =
-          typeof event.delta === "string"
-            ? event.delta
-            : "";
-
-        if (!delta) {
-          return;
-        }
-
-        const previous =
-          partialTranscripts.get(
-            itemId
-          ) ||
-          "";
-
-        const combined =
-          previous +
-          delta;
-
-        partialTranscripts.set(
-          itemId,
-          combined
-        );
-
-        sendTranscriptToVapi(
-          clientWs,
-          combined,
-          "partial"
-        );
-
-        return;
-      }
-
-      // Final transcript.
-      if (
-        event.type ===
-        "conversation.item.input_audio_transcription.completed"
-      ) {
-
-        const itemId =
-          event.item_id ||
-          "current";
-
-        const transcript =
-          typeof event.transcript ===
-          "string"
-            ? event.transcript.trim()
-            : (
-              partialTranscripts.get(
-                itemId
-              ) ||
-              ""
-            ).trim();
-
-        partialTranscripts.delete(
-          itemId
-        );
-
-        if (transcript) {
-
-          console.log(
-            `[STT] OpenAI FINAL: ${transcript}`
-          );
-
-          sendTranscriptToVapi(
-            clientWs,
-            transcript,
-            "final"
-          );
-        }
-
-        return;
-      }
-
-      // Transcription failure.
-      if (
-        event.type ===
-        "conversation.item.input_audio_transcription.failed"
-      ) {
-
-        console.error(
-          "[STT] OpenAI transcription failed:",
-          JSON.stringify(
-            event.error ||
-            event
-          )
-        );
-
-        return;
-      }
-    }
-
-    // -------------------------------------------------
-    // CONNECT TO OPENAI
-    // -------------------------------------------------
 
     try {
 
+      // =================================================
+      // GET TEMPORARY KURDISHTTS WEBSOCKET URL
+      // =================================================
+
       console.log(
-        "[STT] Connecting to OpenAI Realtime..."
+        "[STT] Requesting KurdishTTS streaming URL..."
       );
 
-      openaiWs =
-        new WebSocket(
-          OPENAI_REALTIME_URL,
+      const connectResponse =
+        await fetch(
+          KURDISH_STT_CONNECT_URL,
           {
-            headers: {
-              Authorization:
-                `Bearer ${OPENAI_API_KEY}`,
+            method: "POST",
 
-              "OpenAI-Beta":
-                "realtime=v1"
-            }
+            headers: {
+              "x-api-key": apiKey,
+              "Content-Type":
+                "application/json"
+            },
+
+            body: JSON.stringify({
+              dialect: STT_DIALECT
+            })
           }
         );
 
-      openaiWs.on(
+      if (!connectResponse.ok) {
+
+        const errorText =
+          await connectResponse.text();
+
+        throw new Error(
+          `KurdishTTS STT connection failed: ${errorText}`
+        );
+      }
+
+      const connectData =
+        await connectResponse.json();
+
+      const websocketUrl =
+        connectData.websocket_url ||
+        connectData.websocketUrl ||
+        connectData.url;
+
+      if (!websocketUrl) {
+        throw new Error(
+          "KurdishTTS did not return a websocket_url"
+        );
+      }
+
+      console.log(
+        "[STT] Streaming URL received"
+      );
+
+      // =================================================
+      // CONNECT TO KURDISHTTS REALTIME STT
+      // =================================================
+
+      sttWs = new WebSocket(
+        websocketUrl
+      );
+
+      sttWs.on(
         "open",
         () => {
 
-          console.log(
-            "[STT] Connected to OpenAI Realtime"
-          );
-
-          // Configure a dedicated transcription session.
-          //
-          // Sorani Kurdish guidance is included in the prompt.
-          // This helps the transcription model expect Kurdish
-          // words, names, and common appointment vocabulary.
-          openaiWs.send(
-            JSON.stringify({
-              type:
-                "transcription_session.update",
-
-              input_audio_format:
-                "pcm16",
-
-              input_audio_transcription: {
-                model:
-                  OPENAI_TRANSCRIPTION_MODEL,
-
-                language:
-                  STT_LANGUAGE,
-
-                prompt:
-                  "The speaker may speak Sorani Kurdish (Central Kurdish). Transcribe spoken Sorani Kurdish accurately using Kurdish Arabic script. Preserve Kurdish words and names. Common words include: سڵاو، چۆنی، باشم، سوپاس، بەڵێ، نەخێر، چاوپێکەوتن، پزیشک، نەخۆشخانە، کات، بەیانی، ئێوارە، ئەمڕۆ، سبەی، دووەم، سێیەم."
-              },
-
-              turn_detection: {
-                type:
-                  "server_vad",
-
-                threshold:
-                  0.35,
-
-                prefix_padding_ms:
-                  500,
-
-                silence_duration_ms:
-                  800
-              },
-
-              input_audio_noise_reduction: {
-                type:
-                  "near_field"
-              }
-            })
-          );
+          sttReady = true;
 
           console.log(
-            "[STT] OpenAI transcription configuration sent"
+            "[STT] Connected to KurdishTTS realtime"
           );
+
+          flushPendingAudio();
         }
       );
 
-      openaiWs.on(
+      // =================================================
+      // KURDISHTTS -> VAPI
+      // =================================================
+
+      sttWs.on(
         "message",
         (data) => {
-          handleOpenAIMessage(
+          sendTranscriptToVapi(
+            clientWs,
             data
           );
         }
       );
 
-      openaiWs.on(
+      sttWs.on(
         "error",
         (error) => {
 
+          sttReady = false;
+
           console.error(
-            "[STT] OpenAI WebSocket error:",
+            "[STT] KurdishTTS WebSocket error:",
             error.message
+          );
+
+          if (
+            clientWs.readyState ===
+            WebSocket.OPEN
+          ) {
+            clientWs.send(
+              JSON.stringify({
+                type: "error",
+                error:
+                  "KurdishTTS realtime STT connection error"
+              })
+            );
+          }
+        }
+      );
+
+      sttWs.on(
+        "close",
+        (code, reason) => {
+
+          sttReady = false;
+
+          console.log(
+            `[STT] KurdishTTS disconnected: ${code} ${reason.toString()}`
           );
         }
       );
 
-      openaiWs.on(
-        "close",
-        (
-          code,
-          reason
-        ) => {
+      // =================================================
+      // VAPI -> BRIDGE
+      // =================================================
 
-          openaiReady = false;
+      clientWs.on(
+        "message",
+        (data, isBinary) => {
+
+          // ---------------------------------------------
+          // AUDIO
+          // ---------------------------------------------
+
+          if (isBinary) {
+
+            if (!vapiStarted) {
+              console.log(
+                "[STT] Audio received before Vapi start"
+              );
+              return;
+            }
+
+            if (
+              vapiSampleRate !==
+              REQUIRED_STT_SAMPLE_RATE
+            ) {
+              console.error(
+                `[STT] Vapi sample rate ${vapiSampleRate}Hz. Expected ${REQUIRED_STT_SAMPLE_RATE}Hz`
+              );
+              return;
+            }
+
+            const rawAudio =
+              Buffer.from(data);
+
+            const monoAudio =
+              extractCustomerChannelPcm16(
+                rawAudio,
+                vapiChannels
+              );
+
+            if (monoAudio.length === 0) {
+              return;
+            }
+
+            sendAudioToStt(
+              monoAudio
+            );
+
+            return;
+          }
+
+          // ---------------------------------------------
+          // VAPI CONTROL MESSAGE
+          // ---------------------------------------------
+
+          let message;
+
+          try {
+            message = JSON.parse(
+              data.toString()
+            );
+          } catch {
+
+            console.log(
+              "[STT] Ignoring non-JSON Vapi message"
+            );
+
+            return;
+          }
 
           console.log(
-            `[STT] OpenAI WebSocket closed: ${code} ${reason.toString()}`
+            "[STT] Vapi control:",
+            JSON.stringify(message)
           );
 
+          // ---------------------------------------------
+          // START
+          // ---------------------------------------------
+
           if (
-            !clientClosed &&
-            clientWs.readyState ===
-              WebSocket.OPEN
+            message.type === "start"
           ) {
 
-            console.error(
-              "[STT] OpenAI connection closed during active call"
+            vapiStarted = true;
+
+            vapiEncoding =
+              message.encoding ||
+              "linear16";
+
+            vapiSampleRate =
+              Number(
+                message.sampleRate
+              ) || 16000;
+
+            vapiChannels =
+              Number(
+                message.channels
+              ) || 1;
+
+            console.log(
+              "========================================"
             );
+
+            console.log(
+              "[STT] VAPI AUDIO CONFIGURATION"
+            );
+
+            console.log(
+              `[STT] Encoding: ${vapiEncoding}`
+            );
+
+            console.log(
+              `[STT] Sample rate: ${vapiSampleRate}Hz`
+            );
+
+            console.log(
+              `[STT] Channels: ${vapiChannels}`
+            );
+
+            console.log(
+              `[STT] Required: PCM16 mono ${REQUIRED_STT_SAMPLE_RATE}Hz`
+            );
+
+            console.log(
+              "========================================"
+            );
+
+            const validEncoding =
+              vapiEncoding === "linear16" ||
+              vapiEncoding === "pcm_s16le";
+
+            if (!validEncoding) {
+
+              console.error(
+                `[STT] Unsupported encoding: ${vapiEncoding}`
+              );
+
+              clientWs.send(
+                JSON.stringify({
+                  type: "error",
+                  error:
+                    `Unsupported audio encoding: ${vapiEncoding}`
+                })
+              );
+            }
+
+            if (
+              vapiSampleRate !==
+              REQUIRED_STT_SAMPLE_RATE
+            ) {
+
+              console.error(
+                `[STT] Sample rate must be ${REQUIRED_STT_SAMPLE_RATE}Hz`
+              );
+            }
+
+            return;
           }
+
+          // ---------------------------------------------
+          // FINALIZE
+          // ---------------------------------------------
+
+          if (
+            message.type === "control" &&
+            message.event === "finalize"
+          ) {
+
+            finalizeKurdishStt();
+            return;
+          }
+
+          // ---------------------------------------------
+          // STOP / END
+          // ---------------------------------------------
+
+          if (
+            message.type === "stop" ||
+            message.type === "end"
+          ) {
+
+            finalizeKurdishStt();
+            return;
+          }
+        }
+      );
+
+      // =================================================
+      // VAPI DISCONNECTED
+      // =================================================
+
+      clientWs.on(
+        "close",
+        () => {
+
+          clientClosed = true;
+
+          console.log(
+            "[STT] Vapi disconnected"
+          );
+
+          finalizeKurdishStt();
+
+          setTimeout(
+            () => {
+
+              if (
+                sttWs &&
+                (
+                  sttWs.readyState ===
+                  WebSocket.OPEN ||
+                  sttWs.readyState ===
+                  WebSocket.CONNECTING
+                )
+              ) {
+                try {
+                  sttWs.close();
+                } catch {}
+              }
+
+            },
+            1000
+          );
+        }
+      );
+
+      clientWs.on(
+        "error",
+        (error) => {
+
+          console.error(
+            "[STT] Vapi WebSocket error:",
+            error.message
+          );
         }
       );
 
     } catch (error) {
 
       console.error(
-        "[STT] OPENAI STARTUP ERROR:",
-        error
+        "[STT] Bridge startup error:",
+        error.message
       );
 
-      try {
-        clientWs.close();
-      } catch {}
-
-      return;
-    }
-
-    // =================================================
-    // VAPI -> BRIDGE
-    // =================================================
-
-    clientWs.on(
-      "message",
-      (
-        data,
-        isBinary
-      ) => {
-
-        // ---------------------------------------------
-        // AUDIO
-        // ---------------------------------------------
-
-        if (isBinary) {
-
-          const rawAudio =
-            Buffer.from(data);
-
-          if (!vapiStarted) {
-
-            console.log(
-              "[STT] Audio received before start - ignoring until format is known"
-            );
-
-            return;
-          }
-
-          processVapiAudio(
-            rawAudio
-          );
-
-          return;
-        }
-
-        // ---------------------------------------------
-        // JSON CONTROL
-        // ---------------------------------------------
-
-        let message;
-
-        try {
-          message =
-            JSON.parse(
-              data.toString()
-            );
-        } catch {
-
-          console.log(
-            "[STT] Ignoring invalid Vapi JSON"
-          );
-
-          return;
-        }
-
-        console.log(
-          "[STT] Vapi control:",
-          JSON.stringify(
-            message
-          )
-        );
-
-        // ---------------------------------------------
-        // START
-        // ---------------------------------------------
-
-        if (
-          message.type ===
-          "start"
-        ) {
-
-          vapiStarted = true;
-
-          vapiEncoding =
-            message.encoding ||
-            "linear16";
-
-          vapiSampleRate =
-            Number(
-              message.sampleRate
-            ) ||
-            16000;
-
-          vapiChannels =
-            Number(
-              message.channels
-            ) ||
-            1;
-
-          console.log(
-            "========================================"
-          );
-
-          console.log(
-            "[STT] VAPI AUDIO CONFIGURATION"
-          );
-
-          console.log(
-            `[STT] Encoding: ${vapiEncoding}`
-          );
-
-          console.log(
-            `[STT] Sample rate: ${vapiSampleRate}Hz`
-          );
-
-          console.log(
-            `[STT] Channels: ${vapiChannels}`
-          );
-
-          console.log(
-            `[STT] Container: ${message.container || "unknown"}`
-          );
-
-          console.log(
-            `[STT] Customer channel: 0`
-          );
-
-          console.log(
-            `[STT] OpenAI target: PCM16 mono ${OPENAI_SAMPLE_RATE}Hz`
-          );
-
-          console.log(
-            "========================================"
-          );
-
-          if (
-            vapiSampleRate !==
-            OPENAI_SAMPLE_RATE
-          ) {
-
-            startTranscoder();
-          }
-
-          return;
-        }
-
-        // ---------------------------------------------
-        // FINALIZE
-        //
-        // Force OpenAI to commit remaining audio.
-        // ------------------------------------------------
-
-        if (
-          message.type ===
-            "control" &&
-          message.event ===
-            "finalize"
-        ) {
-
-          console.log(
-            "[STT] Vapi requested finalize"
-          );
-
-          finalizeOpenAIAudio();
-
-          return;
-        }
-
-        // ---------------------------------------------
-        // STOP / END
-        // ---------------------------------------------
-
-        if (
-          message.type ===
-            "stop" ||
-          message.type ===
-            "end"
-        ) {
-
-          console.log(
-            "[STT] Vapi requested stop/end"
-          );
-
-          finalizeOpenAIAudio();
-        }
-      }
-    );
-
-    // =================================================
-    // FINALIZE OPENAI AUDIO
-    // =================================================
-
-    function finalizeOpenAIAudio() {
-
-      if (finalizing) {
-        return;
-      }
-
-      finalizing = true;
-
-      // Stop FFmpeg input first so all remaining
-      // converted audio reaches OpenAI.
       if (
-        transcoder &&
-        transcoder.stdin &&
-        !transcoder.stdin.destroyed
+        clientWs.readyState ===
+        WebSocket.OPEN
       ) {
-        try {
-          transcoder.stdin.end();
-        } catch {}
+
+        clientWs.send(
+          JSON.stringify({
+            type: "error",
+            error:
+              "STT bridge failed",
+            details:
+              error.message
+          })
+        );
+
+        clientWs.close();
       }
-
-      // Give FFmpeg a short moment to flush
-      // its final PCM output.
-      setTimeout(
-        () => {
-
-          if (
-            openaiWs &&
-            openaiWs.readyState ===
-              WebSocket.OPEN
-          ) {
-
-            try {
-
-              openaiWs.send(
-                JSON.stringify({
-                  type:
-                    "input_audio_buffer.commit"
-                })
-              );
-
-              console.log(
-                "[STT] OpenAI commit requested"
-              );
-
-            } catch (error) {
-
-              console.error(
-                "[STT] OpenAI commit error:",
-                error.message
-              );
-            }
-          }
-
-          // Allow time for the final transcript.
-          if (!closeTimer) {
-
-            closeTimer =
-              setTimeout(
-                () => {
-
-                  if (
-                    openaiWs &&
-                    (
-                      openaiWs.readyState ===
-                        WebSocket.OPEN ||
-                      openaiWs.readyState ===
-                        WebSocket.CONNECTING
-                    )
-                  ) {
-                    try {
-                      openaiWs.close();
-                    } catch {}
-                  }
-
-                },
-                2500
-              );
-          }
-
-        },
-        150
-      );
     }
-
-    // =================================================
-    // CLIENT CLOSED
-    // =================================================
-
-    clientWs.on(
-      "close",
-      () => {
-
-        clientClosed = true;
-
-        console.log(
-          "[STT] Vapi client disconnected"
-        );
-
-        if (closeTimer) {
-          clearTimeout(
-            closeTimer
-          );
-
-          closeTimer = null;
-        }
-
-        if (
-          transcoder &&
-          transcoder.stdin &&
-          !transcoder.stdin.destroyed
-        ) {
-          try {
-            transcoder.stdin.end();
-          } catch {}
-        }
-
-        // Allow OpenAI to finish the current utterance.
-        if (
-          openaiWs &&
-          openaiWs.readyState ===
-            WebSocket.OPEN
-        ) {
-
-          try {
-            openaiWs.send(
-              JSON.stringify({
-                type:
-                  "input_audio_buffer.commit"
-              })
-            );
-          } catch {}
-
-          setTimeout(
-            () => {
-
-              if (
-                openaiWs &&
-                (
-                  openaiWs.readyState ===
-                    WebSocket.OPEN ||
-                  openaiWs.readyState ===
-                    WebSocket.CONNECTING
-                )
-              ) {
-                try {
-                  openaiWs.close();
-                } catch {}
-              }
-
-            },
-            1500
-          );
-        }
-      }
-    );
-
-    clientWs.on(
-      "error",
-      (error) => {
-
-        console.error(
-          "[STT] Vapi client error:",
-          error.message
-        );
-      }
-    );
   }
 );
 
@@ -1739,15 +1056,13 @@ server.on(
 
     try {
 
-      const url =
-        new URL(
-          request.url,
-          `http://${request.headers.host}`
-        );
+      const url = new URL(
+        request.url,
+        `http://${request.headers.host}`
+      );
 
       if (
-        url.pathname ===
-        "/api/stt"
+        url.pathname === "/api/stt"
       ) {
 
         console.log(
@@ -1786,39 +1101,6 @@ server.on(
 );
 
 // =====================================================
-// GLOBAL EXPRESS ERROR HANDLER
-// =====================================================
-
-app.use(
-  (
-    error,
-    req,
-    res,
-    next
-  ) => {
-
-    console.error(
-      "[HTTP] Unhandled error:",
-      error
-    );
-
-    if (
-      res.headersSent
-    ) {
-      return next(error);
-    }
-
-    res.status(500).json({
-      error:
-        "Internal bridge error",
-
-      details:
-        error.message
-    });
-  }
-);
-
-// =====================================================
 // START SERVER
 // =====================================================
 
@@ -1840,15 +1122,23 @@ server.listen(
     );
 
     console.log(
-      `TTS endpoint: /api/synthesize`
+      "TTS endpoint: /api/synthesize"
     );
 
     console.log(
-      `STT WebSocket: /api/stt`
+      "STT WebSocket: /api/stt"
     );
 
     console.log(
-      `TTS URL: ${KURDISH_TTS_URL}`
+      `STT provider: KurdishTTS Realtime`
+    );
+
+    console.log(
+      `STT dialect: ${STT_DIALECT}`
+    );
+
+    console.log(
+      `STT required audio: PCM16 mono ${REQUIRED_STT_SAMPLE_RATE}Hz`
     );
 
     console.log(
@@ -1860,39 +1150,11 @@ server.listen(
     );
 
     console.log(
-      "----------------------------------------"
-    );
-
-    console.log(
-      `STT provider: OpenAI Realtime`
-    );
-
-    console.log(
-      `OpenAI URL: ${OPENAI_REALTIME_URL}`
-    );
-
-    console.log(
-      `OpenAI model: ${OPENAI_TRANSCRIPTION_MODEL}`
-    );
-
-    console.log(
-      `STT language: ${STT_LANGUAGE}`
-    );
-
-    console.log(
-      `OpenAI required audio: PCM16 mono ${OPENAI_SAMPLE_RATE}Hz`
-    );
-
-    console.log(
-      `OpenAI key configured: ${!!OPENAI_API_KEY}`
-    );
-
-    console.log(
       `TTS key configured: ${!!process.env.KURDISHTTS_TTS_KEY}`
     );
 
     console.log(
-      "========================================"
+      `STT key configured: ${!!process.env.KURDISHTTS_STT_KEY}`
     );
   }
 );
