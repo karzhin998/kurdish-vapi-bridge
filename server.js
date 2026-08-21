@@ -792,11 +792,15 @@ wss.on(
           if (isBinary) {
 
             if (!vapiStarted) {
-              console.log(
-                "[STT] Audio received before Vapi start"
-              );
-              return;
-            }
+  console.log(
+    "[STT] No start message received - using default audio configuration"
+  );
+
+  vapiStarted = true;
+  vapiEncoding = "linear16";
+  vapiSampleRate = 16000;
+  vapiChannels = 1;
+}
 
             if (
               vapiSampleRate !==
