@@ -426,45 +426,38 @@ function sendTranscriptToVapi(
       return;
     }
 
-    const isFinal =
-      data.is_final === true ||
-      data.isFinal === true ||
-      data.final === true ||
-      data.result?.is_final === true ||
-      data.result?.isFinal === true ||
-      data.result?.final === true;
+   const isFinal =
+  data.is_final === true ||
+  data.isFinal === true ||
+  data.final === true ||
+  data.result?.is_final === true ||
+  data.result?.isFinal === true ||
+  data.result?.final === true;
 
-    if (!isFinal) {
-  console.log(
-    "[STT] Partial transcript ignored"
+const vapiMessage = {
+  type: "transcriber-response",
+  transcription:
+    transcription.trim(),
+  channel: "customer",
+  transcriptType:
+    isFinal
+      ? "final"
+      : "partial"
+};
+
+console.log(
+  "[STT] -> Vapi:",
+  JSON.stringify(vapiMessage)
+);
+
+if (
+  clientWs.readyState ===
+  WebSocket.OPEN
+) {
+  clientWs.send(
+    JSON.stringify(vapiMessage)
   );
-  return;
 }
-
-    const vapiMessage = {
-      type: "transcriber-response",
-      transcription:
-        transcription.trim(),
-      channel: "customer",
-      transcriptType:
-        isFinal
-          ? "final"
-          : "partial"
-    };
-
-    console.log(
-      "[STT] -> Vapi:",
-      JSON.stringify(vapiMessage)
-    );
-
-    if (
-      clientWs.readyState ===
-      WebSocket.OPEN
-    ) {
-      clientWs.send(
-        JSON.stringify(vapiMessage)
-      );
-    }
 
   } catch (error) {
     console.error(
