@@ -450,7 +450,7 @@ const vapiMessage = {
 };
 
 console.log(
-  "[STT] -> Vapi:",
+  `[${new Date().toISOString()}] [STT] -> Vapi:`,
   JSON.stringify(vapiMessage)
 );
 
