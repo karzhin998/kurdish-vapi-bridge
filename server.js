@@ -199,7 +199,11 @@ app.post("/api/synthesize", async (req, res) => {
       pcmBuffer.length
     );
 
-    res.status(200).send(pcmBuffer);
+    console.log(
+  `[${new Date().toISOString()}] [TTS] Audio ready: ${pcmBuffer.length} bytes`
+);
+
+res.status(200).send(pcmBuffer);
 
   } catch (error) {
     console.error(
