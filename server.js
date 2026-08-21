@@ -107,7 +107,12 @@ app.post("/api/synthesize", async (req, res) => {
     const text =
       typeof message?.text === "string"
         ? message.text.trim()
-        : "";
+        : "";  
+
+    console.log(
+  "[TTS] Text received from Vapi:",
+  text
+);
 
     const requestedSampleRate =
       Number(message?.sampleRate) || 16000;
