@@ -429,6 +429,13 @@ function sendTranscriptToVapi(
       data.result?.isFinal === true ||
       data.result?.final === true;
 
+    if (!isFinal) {
+  console.log(
+    "[STT] Partial transcript ignored"
+  );
+  return;
+}
+
     const vapiMessage = {
       type: "transcriber-response",
       transcription:
