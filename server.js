@@ -110,7 +110,7 @@ app.post("/api/synthesize", async (req, res) => {
         : "";  
 
     console.log(
-  "[TTS] Text received from Vapi:",
+  `[${new Date().toISOString()}] [TTS] Text received from Vapi:`,
   text
 );
 
