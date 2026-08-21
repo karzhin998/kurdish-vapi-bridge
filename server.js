@@ -799,7 +799,7 @@ wss.on(
   vapiStarted = true;
   vapiEncoding = "linear16";
   vapiSampleRate = 16000;
-  vapiChannels = 1;
+  vapiChannels = 2;
 }
 
             if (
