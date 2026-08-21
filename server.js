@@ -434,15 +434,19 @@ function sendTranscriptToVapi(
   data.result?.isFinal === true ||
   data.result?.final === true;
 
+if (!isFinal) {
+  console.log(
+    "[STT] Partial transcript ignored"
+  );
+  return;
+}
+
 const vapiMessage = {
   type: "transcriber-response",
   transcription:
     transcription.trim(),
   channel: "customer",
-  transcriptType:
-    isFinal
-      ? "final"
-      : "partial"
+  transcriptType: "final"
 };
 
 console.log(
@@ -458,7 +462,6 @@ if (
     JSON.stringify(vapiMessage)
   );
 }
-
   } catch (error) {
     console.error(
       "[STT] Error processing transcript:",
