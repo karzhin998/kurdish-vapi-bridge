@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Kurdish Vapi STT Test</title>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 30px;
+      background: #111;
+      color: white;
+    }
+
+    button {
+      padding: 12px 20px;
+      margin: 5px;
+      font-size: 16px;
+      cursor: pointer;
+    }
+
+    #log {
+      margin-top: 20px;
+      padding: 15px;
+      background: #222;
+      white-space: pre-wrap;
+      min-height: 250px;
+    }
+  </style>
+</head>
+
+<body>
+
+  <h2>Kurdish Sorani STT Test</h2>
+
+  <button id="start">Start Kurdish Test</button>
+  <button id="stop">Stop</button>
+
+  <pre id="log">Loading Vapi...</pre>
+
+  <script>
+    const PUBLIC_KEY = "067ff9cf-b46b-4ebe-8753-bfd1f7056977";
+    const ASSISTANT_ID = "4c8adc7c-d6ce-459e-b22d-8c046be7a702";
+
+    function log(message) {
+      console.log(message);
+
+      const box = document.getElementById("log");
+
+      box.textContent +=
+        "\n" + message;
+    }
+
+    const script = document.createElement("script");
+
+    script.src =
+      "https://cdn.jsdelivr.net/gh/VapiAI/html-script-tag@latest/dist/assets/index.js";
+
+    script.defer = true;
+    script.async = true;
+
+    script.onload = function () {
+
+      log("Vapi SDK loaded.");
+
+      const vapi = window.vapiSDK.run({
+
+        apiKey: PUBLIC_KEY,
+
+        assistant: ASSISTANT_ID,
+
+        assistantOverrides: {
+
+          transcriber: {
+
+            provider: "custom-transcriber",
+
+            server: {
+
+              url:
+                "wss://kurdish-vapi-bridge-production.up.railway.app/api/stt"
+
+            }
+
+          }
+
+        }
+
+      });
+
+      if (!vapi) {
+
+        log("ERROR: Vapi SDK did not return an object.");
+
+        return;
+
+      }
+
+      log("Vapi initialized.");
+
+      vapi.on("call-start", function () {
+        log("CALL STARTED");
+      });
+
+      vapi.on("call-end", function () {
+        log("CALL ENDED");
+      });
+
+      vapi.on("message", function (message) {
+
+        console.log("VAPI MESSAGE:", message);
+
+        log(
+          "VAPI MESSAGE: " +
+          JSON.stringify(message)
+        );
+
+      });
+
+      vapi.on("error", function (error) {
+
+        console.error(error);
+
+        log(
+          "VAPI ERROR: " +
+          JSON.stringify(error)
+        );
+
+      });
+
+      document.getElementById("start").onclick =
+        function () {
+
+          log("Starting call...");
+
+          vapi.start();
+
+        };
+
+      document.getElementById("stop").onclick =
+        function () {
+
+          log("Stopping call...");
+
+          vapi.stop();
+
+        };
+
+    };
+
+    script.onerror = function () {
+
+      log("ERROR: Could not load Vapi SDK.");
+
+    };
+
+    document.head.appendChild(script);
+  </script>
+
+</body>
+</html>
