@@ -519,6 +519,7 @@ wss.on(
     let sttReady = false;
     let clientClosed = false;
     let finalized = false;
+    let firstAudioChunkLogged = false;
 
     let vapiStarted = false;
     let vapiEncoding = null;
