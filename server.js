@@ -444,7 +444,7 @@ if (!isFinal) {
   );
   return;
 }
-
+firstAudioChunkLogged = false;
 const vapiMessage = {
   type: "transcriber-response",
   transcription:
