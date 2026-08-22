@@ -793,9 +793,17 @@ sttWs.on(
           // AUDIO
           // ---------------------------------------------
 
-          if (isBinary) {
+         if (isBinary) {
 
-            if (!vapiStarted) {
+  if (!firstAudioChunkLogged) {
+    console.log(
+      `[${new Date().toISOString()}] [STT] First audio chunk received from Vapi`
+    );
+
+    firstAudioChunkLogged = true;
+  }
+
+  if (!vapiStarted) {
   console.log(
     "[STT] No start message received - using default audio configuration"
   );
