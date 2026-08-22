@@ -741,53 +741,44 @@ wss.on(
       // KURDISHTTS -> VAPI
       // =================================================
 
-      sttWs.on(
-        "message",
-        (data) => {
-          sendTranscriptToVapi(
-            clientWs,
-            data
-          );
-        }
-      );
+     sttWs.on(
+  "message",
+  (data) => {
+    sendTranscriptToVapi(
+      clientWs,
+      data
+    );
+  }
+);
 
-      sttWs.on(
-        "error",
-        (error) => {
+sttWs.on(
+  "error",
+  (error) => {
 
-          sttReady = false;
+    sttReady = false;
 
-          console.error(
-            "[STT] KurdishTTS WebSocket error:",
-            error.message
-          );
+    console.error(
+      "[STT] KurdishTTS WebSocket error:",
+      error.message
+    );
+  }
+);
 
-          if (
-            clientWs.readyState ===
-            WebSocket.OPEN
-          ) {
-            clientWs.send(
-              JSON.stringify({
-                type: "error",
-                error:
-                  "KurdishTTS realtime STT connection error"
-              })
-            );
-          }
-        }
-      );
+sttWs.on(
+  "close",
+  (code, reason) => {
 
-      sttWs.on(
-        "close",
-        (code, reason) => {
+    sttReady = false;
 
-          sttReady = false;
+    console.log(
+      `[STT] KurdishTTS disconnected: ${code} ${reason.toString()}`
+    );
+  }
+);
 
-          console.log(
-            `[STT] KurdishTTS disconnected: ${code} ${reason.toString()}`
-          );
-        }
-      );
+// =================================================
+// VAPI -> BRIDGE
+// =================================================
 
       // =================================================
       // VAPI -> BRIDGE
