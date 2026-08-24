@@ -520,6 +520,7 @@ wss.on(
     let clientClosed = false;
     let finalized = false;
     let firstAudioChunkLogged = false;
+    let testFinalizeTimer = null;
 
     let vapiStarted = false;
     let vapiEncoding = null;
