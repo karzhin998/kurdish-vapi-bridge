@@ -842,6 +842,19 @@ sttWs.on(
               monoAudio
             );
 
+           if (testFinalizeTimer) {
+  clearTimeout(testFinalizeTimer);
+}
+
+testFinalizeTimer = setTimeout(() => {
+  console.log(
+    `[${new Date().toISOString()}] [STT TEST] Triggering finalize`
+  );
+
+  finalizeKurdishStt();
+
+  testFinalizeTimer = null;
+}, 1500);
             return;
           }
 
