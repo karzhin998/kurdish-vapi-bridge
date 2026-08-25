@@ -803,6 +803,10 @@ sttWs.on(
     firstAudioChunkLogged = true;
   }
 
+           console.log(
+  `[${new Date().toISOString()}] [STT] Binary audio received before Vapi start message`
+);
+           
   if (!vapiStarted) {
   console.log(
     "[STT] No start message received - using default audio configuration"
