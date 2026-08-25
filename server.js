@@ -368,12 +368,88 @@ function extractCustomerChannelPcm16(
 }
 
 // =====================================================
+// DETECT ASSISTANT AUDIO ON VAPI CHANNEL 1
+//
+// Vapi custom-transcriber audio uses stereo PCM16 when
+// channels=2. Channel 0 is customer and channel 1 is
+// assistant. This guard suppresses finals caused by
+// assistant echo/feedback without blocking customer audio.
+// =====================================================
+
+function pcm16ChannelHasEnergy(
+  audioData,
+  channels,
+  channelIndex
+) {
+  if (
+    channels <= channelIndex ||
+    channels < 2
+  ) {
+    return false;
+  }
+
+  const input = Buffer.from(audioData);
+  const bytesPerSample = 2;
+  const bytesPerFrame =
+    channels * bytesPerSample;
+
+  const validLength =
+    input.length -
+    (input.length % bytesPerFrame);
+
+  if (validLength <= 0) {
+    return false;
+  }
+
+  const frameStride = 4;
+  const sampledFrames =
+    Math.floor(
+      validLength /
+      bytesPerFrame /
+      frameStride
+    );
+
+  if (sampledFrames <= 0) {
+    return false;
+  }
+
+  let activeFrames = 0;
+
+  for (
+    let frame = 0;
+    frame < sampledFrames;
+    frame++
+  ) {
+    const offset =
+      frame *
+      frameStride *
+      bytesPerFrame +
+      channelIndex *
+      bytesPerSample;
+
+    const sample =
+      input.readInt16LE(offset);
+
+    if (Math.abs(sample) >= 700) {
+      activeFrames++;
+    }
+  }
+
+  return activeFrames >=
+    Math.max(
+      3,
+      Math.floor(sampledFrames * 0.02)
+    );
+}
+
+// =====================================================
 // KURDISHTTS RESPONSE -> VAPI RESPONSE
 // =====================================================
 
 function sendTranscriptToVapi(
   clientWs,
-  rawData
+  rawData,
+  isAssistantAudioSuppressed = false
 ) {
   try {
     const rawText =
@@ -441,6 +517,14 @@ function sendTranscriptToVapi(
     if (!isFinal) {
       console.log(
         "[STT] Partial transcript ignored"
+      );
+      return;
+    }
+
+    if (isAssistantAudioSuppressed) {
+      console.log(
+        "[STT] Final transcript ignored during assistant audio suppression:",
+        transcription.trim()
       );
       return;
     }
@@ -521,6 +605,11 @@ wss.on(
     let clientClosed = false;
     let finalized = false;
     let firstAudioChunkLogged = false;
+
+    // Suppress STT finals briefly after assistant audio is detected
+    // on channel 1. Customer audio is still forwarded normally.
+    const ASSISTANT_AUDIO_SUPPRESSION_MS = 1500;
+    let assistantAudioSuppressionUntil = 0;
 
     let vapiStarted = false;
     let vapiEncoding = null;
@@ -663,9 +752,6 @@ wss.on(
 
     // =================================================
     // VAPI -> BRIDGE
-    //
-    // IMPORTANT: this listener is registered BEFORE
-    // the asynchronous KurdishTTS connection work.
     // =================================================
 
     clientWs.on(
@@ -686,14 +772,15 @@ wss.on(
             firstAudioChunkLogged = true;
           }
 
-          // Vapi should send the "start" message before
-          // binary audio. Do not guess the audio format
-          // if it has not arrived.
           if (!vapiStarted) {
             console.warn(
-              "[STT] Audio received before Vapi start message; ignoring this chunk"
+              "[STT] Audio arrived before Vapi start message; using temporary default audio configuration"
             );
-            return;
+
+            vapiStarted = true;
+            vapiEncoding = "linear16";
+            vapiSampleRate = 16000;
+            vapiChannels = 2;
           }
 
           if (
@@ -708,6 +795,18 @@ wss.on(
 
           const rawAudio =
             Buffer.from(data);
+
+          if (
+            pcm16ChannelHasEnergy(
+              rawAudio,
+              vapiChannels,
+              1
+            )
+          ) {
+            assistantAudioSuppressionUntil =
+              Date.now() +
+              ASSISTANT_AUDIO_SUPPRESSION_MS;
+          }
 
           const monoAudio =
             extractCustomerChannelPcm16(
@@ -812,7 +911,13 @@ wss.on(
               `[STT] Unsupported encoding: ${vapiEncoding}`
             );
 
-            return;
+            clientWs.send(
+              JSON.stringify({
+                type: "error",
+                error:
+                  `Unsupported audio encoding: ${vapiEncoding}`
+              })
+            );
           }
 
           if (
@@ -824,10 +929,6 @@ wss.on(
               `[STT] Sample rate must be ${REQUIRED_STT_SAMPLE_RATE}Hz`
             );
           }
-
-          // If KurdishTTS is already connected,
-          // flush any buffered audio.
-          flushPendingAudio();
 
           return;
         }
@@ -947,7 +1048,8 @@ wss.on(
         (data) => {
           sendTranscriptToVapi(
             clientWs,
-            data
+            data,
+            Date.now() < assistantAudioSuppressionUntil
           );
         }
       );
