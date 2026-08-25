@@ -107,12 +107,12 @@ app.post("/api/synthesize", async (req, res) => {
     const text =
       typeof message?.text === "string"
         ? message.text.trim()
-        : "";  
+        : "";
 
     console.log(
-  `[${new Date().toISOString()}] [TTS] Text received from Vapi:`,
-  text
-);
+      `[${new Date().toISOString()}] [TTS] Text received from Vapi:`,
+      text
+    );
 
     const requestedSampleRate =
       Number(message?.sampleRate) || 16000;
@@ -200,10 +200,10 @@ app.post("/api/synthesize", async (req, res) => {
     );
 
     console.log(
-  `[${new Date().toISOString()}] [TTS] Audio ready: ${pcmBuffer.length} bytes`
-);
+      `[${new Date().toISOString()}] [TTS] Audio ready: ${pcmBuffer.length} bytes`
+    );
 
-res.status(200).send(pcmBuffer);
+    res.status(200).send(pcmBuffer);
 
   } catch (error) {
     console.error(
@@ -430,42 +430,43 @@ function sendTranscriptToVapi(
       return;
     }
 
-   const isFinal =
-  data.is_final === true ||
-  data.isFinal === true ||
-  data.final === true ||
-  data.result?.is_final === true ||
-  data.result?.isFinal === true ||
-  data.result?.final === true;
+    const isFinal =
+      data.is_final === true ||
+      data.isFinal === true ||
+      data.final === true ||
+      data.result?.is_final === true ||
+      data.result?.isFinal === true ||
+      data.result?.final === true;
 
-if (!isFinal) {
-  console.log(
-    "[STT] Partial transcript ignored"
-  );
-  return;
-}
-firstAudioChunkLogged = false;
-const vapiMessage = {
-  type: "transcriber-response",
-  transcription:
-    transcription.trim(),
-  channel: "customer",
-  transcriptType: "final"
-};
+    if (!isFinal) {
+      console.log(
+        "[STT] Partial transcript ignored"
+      );
+      return;
+    }
 
-console.log(
-  `[${new Date().toISOString()}] [STT] -> Vapi:`,
-  JSON.stringify(vapiMessage)
-);
+    const vapiMessage = {
+      type: "transcriber-response",
+      transcription:
+        transcription.trim(),
+      channel: "customer",
+      transcriptType: "final"
+    };
 
-if (
-  clientWs.readyState ===
-  WebSocket.OPEN
-) {
-  clientWs.send(
-    JSON.stringify(vapiMessage)
-  );
-}
+    console.log(
+      `[${new Date().toISOString()}] [STT] -> Vapi:`,
+      JSON.stringify(vapiMessage)
+    );
+
+    if (
+      clientWs.readyState ===
+      WebSocket.OPEN
+    ) {
+      clientWs.send(
+        JSON.stringify(vapiMessage)
+      );
+    }
+
   } catch (error) {
     console.error(
       "[STT] Error processing transcript:",
@@ -660,6 +661,205 @@ wss.on(
       }
     }
 
+    // =================================================
+    // VAPI -> BRIDGE
+    //
+    // IMPORTANT: this listener is registered BEFORE
+    // the asynchronous KurdishTTS connection work.
+    // =================================================
+
+    clientWs.on(
+      "message",
+      (data, isBinary) => {
+
+        // ---------------------------------------------
+        // AUDIO
+        // ---------------------------------------------
+
+        if (isBinary) {
+
+          if (!firstAudioChunkLogged) {
+            console.log(
+              `[${new Date().toISOString()}] [STT] First audio chunk received from Vapi`
+            );
+
+            firstAudioChunkLogged = true;
+          }
+
+          // Vapi should send the "start" message before
+          // binary audio. Do not guess the audio format
+          // if it has not arrived.
+          if (!vapiStarted) {
+            console.warn(
+              "[STT] Audio received before Vapi start message; ignoring this chunk"
+            );
+            return;
+          }
+
+          if (
+            vapiSampleRate !==
+            REQUIRED_STT_SAMPLE_RATE
+          ) {
+            console.error(
+              `[STT] Vapi sample rate ${vapiSampleRate}Hz. Expected ${REQUIRED_STT_SAMPLE_RATE}Hz`
+            );
+            return;
+          }
+
+          const rawAudio =
+            Buffer.from(data);
+
+          const monoAudio =
+            extractCustomerChannelPcm16(
+              rawAudio,
+              vapiChannels
+            );
+
+          if (monoAudio.length === 0) {
+            return;
+          }
+
+          sendAudioToStt(
+            monoAudio
+          );
+
+          return;
+        }
+
+        // ---------------------------------------------
+        // VAPI CONTROL MESSAGE
+        // ---------------------------------------------
+
+        let message;
+
+        try {
+          message = JSON.parse(
+            data.toString()
+          );
+        } catch {
+
+          console.log(
+            "[STT] Ignoring non-JSON Vapi message"
+          );
+
+          return;
+        }
+
+        console.log(
+          "[STT] Vapi control:",
+          JSON.stringify(message)
+        );
+
+        // ---------------------------------------------
+        // START
+        // ---------------------------------------------
+
+        if (
+          message.type === "start"
+        ) {
+
+          vapiStarted = true;
+
+          vapiEncoding =
+            message.encoding ||
+            "linear16";
+
+          vapiSampleRate =
+            Number(
+              message.sampleRate
+            ) || 16000;
+
+          vapiChannels =
+            Number(
+              message.channels
+            ) || 1;
+
+          console.log(
+            "========================================"
+          );
+
+          console.log(
+            "[STT] VAPI AUDIO CONFIGURATION"
+          );
+
+          console.log(
+            `[STT] Encoding: ${vapiEncoding}`
+          );
+
+          console.log(
+            `[STT] Sample rate: ${vapiSampleRate}Hz`
+          );
+
+          console.log(
+            `[STT] Channels: ${vapiChannels}`
+          );
+
+          console.log(
+            `[STT] Required: PCM16 mono ${REQUIRED_STT_SAMPLE_RATE}Hz`
+          );
+
+          console.log(
+            "========================================"
+          );
+
+          const validEncoding =
+            vapiEncoding === "linear16" ||
+            vapiEncoding === "pcm_s16le";
+
+          if (!validEncoding) {
+
+            console.error(
+              `[STT] Unsupported encoding: ${vapiEncoding}`
+            );
+
+            return;
+          }
+
+          if (
+            vapiSampleRate !==
+            REQUIRED_STT_SAMPLE_RATE
+          ) {
+
+            console.error(
+              `[STT] Sample rate must be ${REQUIRED_STT_SAMPLE_RATE}Hz`
+            );
+          }
+
+          // If KurdishTTS is already connected,
+          // flush any buffered audio.
+          flushPendingAudio();
+
+          return;
+        }
+
+        // ---------------------------------------------
+        // FINALIZE
+        // ---------------------------------------------
+
+        if (
+          message.type === "control" &&
+          message.event === "finalize"
+        ) {
+
+          finalizeKurdishStt();
+          return;
+        }
+
+        // ---------------------------------------------
+        // STOP / END
+        // ---------------------------------------------
+
+        if (
+          message.type === "stop" ||
+          message.type === "end"
+        ) {
+
+          finalizeKurdishStt();
+          return;
+        }
+      }
+    );
+
     try {
 
       // =================================================
@@ -742,245 +942,38 @@ wss.on(
       // KURDISHTTS -> VAPI
       // =================================================
 
-     sttWs.on(
-  "message",
-  (data) => {
-    sendTranscriptToVapi(
-      clientWs,
-      data
-    );
-  }
-);
-
-sttWs.on(
-  "error",
-  (error) => {
-
-    sttReady = false;
-
-    console.error(
-      "[STT] KurdishTTS WebSocket error:",
-      error.message
-    );
-  }
-);
-
-sttWs.on(
-  "close",
-  (code, reason) => {
-
-    sttReady = false;
-
-    console.log(
-      `[STT] KurdishTTS disconnected: ${code} ${reason.toString()}`
-    );
-  }
-);
-
-// =================================================
-// VAPI -> BRIDGE
-// =================================================
-
-      // =================================================
-      // VAPI -> BRIDGE
-      // =================================================
-
-      clientWs.on(
+      sttWs.on(
         "message",
-        (data, isBinary) => {
+        (data) => {
+          sendTranscriptToVapi(
+            clientWs,
+            data
+          );
+        }
+      );
 
-          // ---------------------------------------------
-          // AUDIO
-          // ---------------------------------------------
+      sttWs.on(
+        "error",
+        (error) => {
 
-         if (isBinary) {
+          sttReady = false;
 
-  if (!firstAudioChunkLogged) {
-    console.log(
-      `[${new Date().toISOString()}] [STT] First audio chunk received from Vapi`
-    );
+          console.error(
+            "[STT] KurdishTTS WebSocket error:",
+            error.message
+          );
+        }
+      );
 
-    firstAudioChunkLogged = true;
-  }
+      sttWs.on(
+        "close",
+        (code, reason) => {
 
-           console.log(
-  `[${new Date().toISOString()}] [STT] Binary audio received before Vapi start message`
-);
-           
-  if (!vapiStarted) {
-  console.log(
-    "[STT] No start message received - using default audio configuration"
-  );
-
-  vapiStarted = true;
-  vapiEncoding = "linear16";
-  vapiSampleRate = 16000;
-  vapiChannels = 2;
-}
-
-            if (
-              vapiSampleRate !==
-              REQUIRED_STT_SAMPLE_RATE
-            ) {
-              console.error(
-                `[STT] Vapi sample rate ${vapiSampleRate}Hz. Expected ${REQUIRED_STT_SAMPLE_RATE}Hz`
-              );
-              return;
-            }
-
-            const rawAudio =
-              Buffer.from(data);
-
-            const monoAudio =
-              extractCustomerChannelPcm16(
-                rawAudio,
-                vapiChannels
-              );
-
-            if (monoAudio.length === 0) {
-              return;
-            }
-
-            sendAudioToStt(
-              monoAudio
-            );
-
-            return;
-          }
-
-          // ---------------------------------------------
-          // VAPI CONTROL MESSAGE
-          // ---------------------------------------------
-
-          let message;
-
-          try {
-            message = JSON.parse(
-              data.toString()
-            );
-          } catch {
-
-            console.log(
-              "[STT] Ignoring non-JSON Vapi message"
-            );
-
-            return;
-          }
+          sttReady = false;
 
           console.log(
-            "[STT] Vapi control:",
-            JSON.stringify(message)
+            `[STT] KurdishTTS disconnected: ${code} ${reason.toString()}`
           );
-
-          // ---------------------------------------------
-          // START
-          // ---------------------------------------------
-
-          if (
-            message.type === "start"
-          ) {
-
-            vapiStarted = true;
-
-            vapiEncoding =
-              message.encoding ||
-              "linear16";
-
-            vapiSampleRate =
-              Number(
-                message.sampleRate
-              ) || 16000;
-
-            vapiChannels =
-              Number(
-                message.channels
-              ) || 1;
-
-            console.log(
-              "========================================"
-            );
-
-            console.log(
-              "[STT] VAPI AUDIO CONFIGURATION"
-            );
-
-            console.log(
-              `[STT] Encoding: ${vapiEncoding}`
-            );
-
-            console.log(
-              `[STT] Sample rate: ${vapiSampleRate}Hz`
-            );
-
-            console.log(
-              `[STT] Channels: ${vapiChannels}`
-            );
-
-            console.log(
-              `[STT] Required: PCM16 mono ${REQUIRED_STT_SAMPLE_RATE}Hz`
-            );
-
-            console.log(
-              "========================================"
-            );
-
-            const validEncoding =
-              vapiEncoding === "linear16" ||
-              vapiEncoding === "pcm_s16le";
-
-            if (!validEncoding) {
-
-              console.error(
-                `[STT] Unsupported encoding: ${vapiEncoding}`
-              );
-
-              clientWs.send(
-                JSON.stringify({
-                  type: "error",
-                  error:
-                    `Unsupported audio encoding: ${vapiEncoding}`
-                })
-              );
-            }
-
-            if (
-              vapiSampleRate !==
-              REQUIRED_STT_SAMPLE_RATE
-            ) {
-
-              console.error(
-                `[STT] Sample rate must be ${REQUIRED_STT_SAMPLE_RATE}Hz`
-              );
-            }
-
-            return;
-          }
-
-          // ---------------------------------------------
-          // FINALIZE
-          // ---------------------------------------------
-
-          if (
-            message.type === "control" &&
-            message.event === "finalize"
-          ) {
-
-            finalizeKurdishStt();
-            return;
-          }
-
-          // ---------------------------------------------
-          // STOP / END
-          // ---------------------------------------------
-
-          if (
-            message.type === "stop" ||
-            message.type === "end"
-          ) {
-
-            finalizeKurdishStt();
-            return;
-          }
         }
       );
 
