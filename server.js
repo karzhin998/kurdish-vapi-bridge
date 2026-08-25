@@ -608,7 +608,7 @@ wss.on(
 
     // Suppress STT finals briefly after assistant audio is detected
     // on channel 1. Customer audio is still forwarded normally.
-    const ASSISTANT_AUDIO_SUPPRESSION_MS = 1500;
+    const ASSISTANT_AUDIO_SUPPRESSION_MS = 4000;
     let assistantAudioSuppressionUntil = 0;
 
     let vapiStarted = false;
