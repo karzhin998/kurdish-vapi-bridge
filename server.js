@@ -478,7 +478,10 @@ function sendTranscriptToVapi(
       return;
     }
 
-    // Done after finalize
+    // ---------------------------------------------
+    // KURDISHTTS STREAM DONE
+    // ---------------------------------------------
+
     if (
       data.type === "control" &&
       data.event === "done"
@@ -489,6 +492,10 @@ function sendTranscriptToVapi(
       return;
     }
 
+    // ---------------------------------------------
+    // KURDISHTTS ERROR
+    // ---------------------------------------------
+
     if (data.error) {
       console.error(
         "[STT] KurdishTTS error:",
@@ -496,6 +503,10 @@ function sendTranscriptToVapi(
       );
       return;
     }
+
+    // ---------------------------------------------
+    // GET TRANSCRIPT TEXT
+    // ---------------------------------------------
 
     const transcription =
       data.text ||
@@ -513,6 +524,10 @@ function sendTranscriptToVapi(
       return;
     }
 
+    // ---------------------------------------------
+    // FINAL DETECTION
+    // ---------------------------------------------
+
     const isFinal =
       data.is_final === true ||
       data.isFinal === true ||
@@ -528,35 +543,107 @@ function sendTranscriptToVapi(
       return;
     }
 
+    const text =
+      transcription.trim();
+
+    // ---------------------------------------------
+    // IGNORE FINALS DURING ASSISTANT AUDIO
+    // ---------------------------------------------
+
     if (isAssistantAudioSuppressed) {
       console.log(
         "[STT] Final transcript ignored during assistant audio suppression:",
-        transcription.trim()
+        text
       );
       return;
     }
 
-    const vapiMessage = {
-      type: "transcriber-response",
-      transcription:
-        transcription.trim(),
-      channel: "customer",
-      transcriptType: "final"
-    };
+    // ---------------------------------------------
+    // GET DEBOUNCE STATE FOR THIS CALL
+    // ---------------------------------------------
 
-    console.log(
-      `[${new Date().toISOString()}] [STT] -> Vapi:`,
-      JSON.stringify(vapiMessage)
-    );
+    let state =
+      transcriptDebounceState.get(
+        clientWs
+      );
 
-    if (
-      clientWs.readyState ===
-      WebSocket.OPEN
-    ) {
-      clientWs.send(
-        JSON.stringify(vapiMessage)
+    if (!state) {
+      state = {
+        pendingText: "",
+        timer: null
+      };
+
+      transcriptDebounceState.set(
+        clientWs,
+        state
       );
     }
+
+    // ---------------------------------------------
+    // BUFFER FINAL TRANSCRIPT
+    // ---------------------------------------------
+
+    if (state.pendingText) {
+      state.pendingText +=
+        " " + text;
+    } else {
+      state.pendingText = text;
+    }
+
+    console.log(
+      "[STT] Final transcript buffered:",
+      state.pendingText
+    );
+
+    // ---------------------------------------------
+    // RESET DEBOUNCE TIMER
+    // ---------------------------------------------
+
+    if (state.timer) {
+      clearTimeout(
+        state.timer
+      );
+    }
+
+    state.timer = setTimeout(
+      () => {
+
+        const finalText =
+          state.pendingText.trim();
+
+        state.pendingText = "";
+        state.timer = null;
+
+        if (!finalText) {
+          return;
+        }
+
+        const vapiMessage = {
+          type: "transcriber-response",
+          transcription: finalText,
+          channel: "customer",
+          transcriptType: "final"
+        };
+
+        console.log(
+          `[${new Date().toISOString()}] [STT] -> Vapi:`,
+          JSON.stringify(vapiMessage)
+        );
+
+        if (
+          clientWs.readyState ===
+          WebSocket.OPEN
+        ) {
+          clientWs.send(
+            JSON.stringify(
+              vapiMessage
+            )
+          );
+        }
+
+      },
+      TRANSCRIPT_DEBOUNCE_MS
+    );
 
   } catch (error) {
     console.error(
@@ -565,7 +652,6 @@ function sendTranscriptToVapi(
     );
   }
 }
-
 // =====================================================
 // STT WEBSOCKET CONNECTION
 // =====================================================
