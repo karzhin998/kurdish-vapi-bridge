@@ -441,7 +441,14 @@ function pcm16ChannelHasEnergy(
       Math.floor(sampledFrames * 0.02)
     );
 }
+// =====================================================
+// STT FINAL TRANSCRIPT DEBOUNCE
+// =====================================================
 
+const transcriptDebounceState =
+  new WeakMap();
+
+const TRANSCRIPT_DEBOUNCE_MS = 800;
 // =====================================================
 // KURDISHTTS RESPONSE -> VAPI RESPONSE
 // =====================================================
