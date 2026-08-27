@@ -448,7 +448,8 @@ function pcm16ChannelHasEnergy(
 const transcriptDebounceState =
   new WeakMap();
 
-const TRANSCRIPT_DEBOUNCE_MS = 800;
+const TRANSCRIPT_DEBOUNCE_MS = 300;
+
 // =====================================================
 // KURDISHTTS RESPONSE -> VAPI RESPONSE
 // =====================================================
@@ -459,6 +460,7 @@ function sendTranscriptToVapi(
   isAssistantAudioSuppressed = false
 ) {
   try {
+
     const rawText =
       rawData.toString();
 
@@ -524,6 +526,9 @@ function sendTranscriptToVapi(
       return;
     }
 
+    const text =
+      transcription.trim();
+
     // ---------------------------------------------
     // FINAL DETECTION
     // ---------------------------------------------
@@ -536,30 +541,54 @@ function sendTranscriptToVapi(
       data.result?.isFinal === true ||
       data.result?.final === true;
 
-    if (!isFinal) {
-      console.log(
-        "[STT] Partial transcript ignored"
-      );
-      return;
-    }
-
-    const text =
-      transcription.trim();
-
     // ---------------------------------------------
-    // IGNORE FINALS DURING ASSISTANT AUDIO
+    // ASSISTANT AUDIO PROTECTION
     // ---------------------------------------------
 
     if (isAssistantAudioSuppressed) {
       console.log(
-        "[STT] Final transcript ignored during assistant audio suppression:",
+        "[STT] Transcript ignored during assistant audio suppression:",
         text
       );
       return;
     }
 
     // ---------------------------------------------
-    // GET DEBOUNCE STATE FOR THIS CALL
+    // PARTIAL TRANSCRIPT
+    //
+    // Send latest partial immediately.
+    // ---------------------------------------------
+
+    if (!isFinal) {
+
+      const partialMessage = {
+        type: "transcriber-response",
+        transcription: text,
+        channel: "customer",
+        transcriptType: "partial"
+      };
+
+      console.log(
+        `[${new Date().toISOString()}] [STT] -> Vapi PARTIAL:`,
+        JSON.stringify(partialMessage)
+      );
+
+      if (
+        clientWs.readyState ===
+        WebSocket.OPEN
+      ) {
+        clientWs.send(
+          JSON.stringify(
+            partialMessage
+          )
+        );
+      }
+
+      return;
+    }
+
+    // ---------------------------------------------
+    // FINAL TRANSCRIPT
     // ---------------------------------------------
 
     let state =
@@ -579,16 +608,9 @@ function sendTranscriptToVapi(
       );
     }
 
-    // ---------------------------------------------
-    // BUFFER FINAL TRANSCRIPT
-    // ---------------------------------------------
-
-    if (state.pendingText) {
-      state.pendingText +=
-        " " + text;
-    } else {
-      state.pendingText = text;
-    }
+    // Keep only the latest final result.
+    // Do NOT concatenate cumulative results.
+    state.pendingText = text;
 
     console.log(
       "[STT] Final transcript buffered:",
@@ -618,6 +640,10 @@ function sendTranscriptToVapi(
           return;
         }
 
+        // -----------------------------------------
+        // SEND ONE FINAL TURN TO VAPI
+        // -----------------------------------------
+
         const vapiMessage = {
           type: "transcriber-response",
           transcription: finalText,
@@ -626,7 +652,7 @@ function sendTranscriptToVapi(
         };
 
         console.log(
-          `[${new Date().toISOString()}] [STT] -> Vapi:`,
+          `[${new Date().toISOString()}] [STT] -> Vapi FINAL:`,
           JSON.stringify(vapiMessage)
         );
 
@@ -646,12 +672,14 @@ function sendTranscriptToVapi(
     );
 
   } catch (error) {
+
     console.error(
       "[STT] Error processing transcript:",
       error.message
     );
   }
 }
+
 // =====================================================
 // STT WEBSOCKET CONNECTION
 // =====================================================
