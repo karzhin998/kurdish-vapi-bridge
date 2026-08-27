@@ -560,32 +560,11 @@ function sendTranscriptToVapi(
     // ---------------------------------------------
 
     if (!isFinal) {
-
-      const partialMessage = {
-        type: "transcriber-response",
-        transcription: text,
-        channel: "customer",
-        transcriptType: "partial"
-      };
-
-      console.log(
-        `[${new Date().toISOString()}] [STT] -> Vapi PARTIAL:`,
-        JSON.stringify(partialMessage)
-      );
-
-      if (
-        clientWs.readyState ===
-        WebSocket.OPEN
-      ) {
-        clientWs.send(
-          JSON.stringify(
-            partialMessage
-          )
-        );
-      }
-
-      return;
-    }
+  console.log(
+    "[STT] Partial transcript ignored"
+  );
+  return;
+}
 
     // ---------------------------------------------
     // FINAL TRANSCRIPT
